@@ -3,13 +3,15 @@
 // 壊れたデータ・旧バージョンは黙って読み捨てる（クラッシュさせない）。
 
 import {
-  normalizeTier,
+  deriveSimMoneyCore,
   parseFeePercent,
-  parseNum,
+  type SimMoneyResult,
   type TallyEvent,
   type TallyItem,
 } from "@/lib/soneki";
 import { SIM_STORAGE_NAME, TALLY_STORAGE_NAME } from "./config";
+
+export type { SimMoneyResult };
 
 // ---------------------------------------------------------------------------
 // スキーマ v1
@@ -247,29 +249,15 @@ export function clearTally(): void {
 // タリー ⇄ シミュレータの接続（実売サマリ用の導出・純関数）
 // ---------------------------------------------------------------------------
 
-export interface SimMoneyParams {
-  /** 頒価（円） */
-  price: number;
-  /** 印刷総額 + 固定費（円） */
-  baseCost: number;
-}
-
 /**
  * 保存済みシミュレータ入力から、タリーの実売サマリに必要な値を導出する。
- * 頒価と選択中の単価行が確定していなければ null（サマリは出さない）。
- * 会場頒布（手数料 0）前提で「実売数 × 頒価 − 費用 = 現在損益」を計算する。
+ * 実体は lib の deriveSimMoneyCore（保存経路も入力経路と同じ検証規約）。
+ *   - ok: true            … price / baseCost が確定
+ *   - reason: "not-configured" … 未入力（案内表示）
+ *   - reason: "invalid"        … 保存値に不正な入力（損益計算をブロックし修正を促す）
  */
-export function deriveSimMoney(saved: SimSaved | null): SimMoneyParams | null {
-  if (saved === null) return null;
-  const price = parseNum(saved.price);
-  if (price === null || price <= 0) return null;
-  const row = saved.tiers.find((t) => t.id === saved.selectedTierId);
-  if (row === undefined) return null;
-  const tier = normalizeTier(row);
-  if (tier === null) return null;
-  const fixed =
-    (parseNum(saved.fixedEvent) ?? 0) + (parseNum(saved.fixedOther) ?? 0);
-  return { price, baseCost: tier.totalCost + fixed };
+export function deriveSimMoney(saved: SimSaved | null): SimMoneyResult {
+  return deriveSimMoneyCore(saved);
 }
 
 /** 保存済みチャネルの手数料率が妥当か（UI の復元時バリデーション補助）。 */

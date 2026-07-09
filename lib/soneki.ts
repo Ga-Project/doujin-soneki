@@ -47,6 +47,23 @@ export function parseOptionalYen(raw: string): number | null {
   return parseNum(raw);
 }
 
+/**
+ * 予定部数（配分プラン用・任意入力）。
+ *   - 空欄・0 = 配分しない（copies: null）
+ *   - 1〜MAX_COPIES の整数 = 配分部数
+ *   - 負値・小数・数値でない・上限超過 = ok:false（黙ってスキップせず配分計算をブロック）
+ */
+export function parsePlannedCopies(
+  raw: string,
+): { ok: true; copies: number | null } | { ok: false } {
+  if (raw.trim() === "") return { ok: true, copies: null };
+  const n = parseNum(raw);
+  if (n === null || !Number.isInteger(n) || n > MAX_COPIES) {
+    return { ok: false };
+  }
+  return { ok: true, copies: n === 0 ? null : n };
+}
+
 // ---------------------------------------------------------------------------
 // 印刷費の階段単価テーブル
 // ---------------------------------------------------------------------------
@@ -361,6 +378,60 @@ export function compactYen(n: number): string {
     return `${sign}${s}万`;
   }
   return `${sign}${abs.toLocaleString("ja-JP")}`;
+}
+
+// ---------------------------------------------------------------------------
+// シミュレータ ⇄ タリーの接続（保存済み入力からの損益パラメータ導出）
+// ---------------------------------------------------------------------------
+
+/** 保存済みシミュレータ入力の構造的最小型（UI 層の保存形と互換）。 */
+export interface SimSavedLike {
+  price: string;
+  tiers: readonly (TierInput & { id: string })[];
+  selectedTierId: string;
+  fixedEvent: string;
+  fixedOther: string;
+}
+
+export type SimMoneyResult =
+  | { ok: true; price: number; baseCost: number }
+  | { ok: false; reason: "not-configured" | "invalid" };
+
+/**
+ * 保存済みシミュレータ入力から、タリーの実売サマリに必要な値を導出する。
+ * 保存経路でも入力経路と同じ規約に従う:
+ *   - 空欄・未選択 = 未設定（not-configured・案内表示）
+ *   - 非空で parse 不能・範囲外 = invalid（黙って 0 扱いにせず損益計算をブロック）
+ */
+export function deriveSimMoneyCore(saved: SimSavedLike | null): SimMoneyResult {
+  if (saved === null) return { ok: false, reason: "not-configured" };
+
+  // 固定費: 空欄=0・不正な非空値は invalid（シミュレータ側のブロックと同一規約）
+  const fixedEvent = parseOptionalYen(saved.fixedEvent);
+  const fixedOther = parseOptionalYen(saved.fixedOther);
+  if (fixedEvent === null || fixedOther === null) {
+    return { ok: false, reason: "invalid" };
+  }
+
+  // 頒価: 空欄=未設定、非空で不正（負値・非数値・0 円）は invalid
+  if (saved.price.trim() === "") return { ok: false, reason: "not-configured" };
+  const price = parseNum(saved.price);
+  if (price === null || price <= 0) return { ok: false, reason: "invalid" };
+
+  // 選択中の単価行: 全部空欄=未設定、入力があるのに不成立=invalid
+  const row = saved.tiers.find((t) => t.id === saved.selectedTierId);
+  if (row === undefined) return { ok: false, reason: "not-configured" };
+  const tier = normalizeTier(row);
+  if (tier === null) {
+    const anyInput = row.copies !== "" || row.unit !== "" || row.total !== "";
+    return { ok: false, reason: anyInput ? "invalid" : "not-configured" };
+  }
+
+  return {
+    ok: true,
+    price,
+    baseCost: tier.totalCost + fixedEvent + fixedOther,
+  };
 }
 
 // ---------------------------------------------------------------------------

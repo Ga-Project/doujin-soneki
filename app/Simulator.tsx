@@ -18,6 +18,7 @@ import {
   parseFeePercent,
   parseNum,
   parseOptionalYen,
+  parsePlannedCopies,
   perCopyAtSellout,
   priceRange,
   profitAt,
@@ -235,6 +236,8 @@ export function Simulator() {
       }
       if (!ch.visible) continue;
       const params: ChannelParams = parsed.params;
+      // price が未確定/不正のときは ready=false で KPI・グラフとも表示されない。
+      // ここの 0 は「表示されない系列」の内部プレースホルダで、結果には出ない
       const p = price ?? 0;
       seriesAll.push({
         id: ch.id,
@@ -314,18 +317,38 @@ export function Simulator() {
       });
     }
 
-    // 配分プラン（予定部数）
+    // 配分プラン（予定部数）。不正な予定部数は黙ってスキップせず、
+    // フィールドエラー＋結果側エラーを出して配分サマリ全体をブロックする
+    // （部分計算による過小な計画/損益を出さない）
+    const plannedInvalidIds = new Set<string>();
+    const plannedErrors: { id: string; msg: string }[] = [];
+    for (const ch of state.channels) {
+      if (!parsePlannedCopies(ch.planned).ok) {
+        plannedInvalidIds.add(ch.id);
+        plannedErrors.push({
+          id: `plan-${ch.id}`,
+          msg: `「${ch.name}」: 予定部数は 0 以上の整数で入れてください`,
+        });
+      }
+    }
     const plans: { name: string; copies: number; ch: ChannelParams }[] = [];
+    let plannedBlocked = false;
     for (const s of seriesAll) {
       const chRow = state.channels.find((c) => c.id === s.id);
-      const planned = chRow === undefined ? null : parseNum(chRow.planned);
-      if (planned !== null && planned > 0 && Number.isInteger(planned)) {
-        plans.push({ name: s.name, copies: planned, ch: s.params });
+      if (chRow === undefined) continue;
+      const planned = parsePlannedCopies(chRow.planned);
+      if (!planned.ok) {
+        // 計算対象チャネルに不正な予定部数がある → 配分サマリをブロック
+        plannedBlocked = true;
+        continue;
+      }
+      if (planned.copies !== null) {
+        plans.push({ name: s.name, copies: planned.copies, ch: s.params });
       }
     }
     const plannedTotal = plans.reduce((acc, p) => acc + p.copies, 0);
     const allocation =
-      ready && plans.length > 0 && price !== null
+      ready && !plannedBlocked && plans.length > 0 && price !== null
         ? allocationProfit(plans, price, baseCost)
         : null;
 
@@ -352,6 +375,9 @@ export function Simulator() {
       missing,
       plans,
       plannedTotal,
+      plannedInvalidIds,
+      plannedErrors,
+      plannedBlocked,
       allocation,
       range,
     };
@@ -374,6 +400,9 @@ export function Simulator() {
     missing,
     plans,
     plannedTotal,
+    plannedInvalidIds,
+    plannedErrors,
+    plannedBlocked,
     allocation,
     range,
   } = derived;
@@ -526,7 +555,7 @@ export function Simulator() {
         : `損益グラフ。${mainSeries.name}は${mainBreakEven}部で黒字転換、完売時は${formatSignedYen(mainSellout)}`
       : "損益グラフ。入力が完了すると損益カーブが表示されます";
 
-  const errorList = [...missing, ...rowErrors, ...feeErrors];
+  const errorList = [...missing, ...rowErrors, ...feeErrors, ...plannedErrors];
   // 上限判定は「委託チャネルの行数」基準（表示 OFF・手数料未入力の行も数える。
   // 系列色が 3 色 = 計算対象の枠が 3 件のため、行自体を 3 件までに制限する）
   const consignRows = state.channels.filter((c) => c.kind === "consign").length;
@@ -905,10 +934,16 @@ export function Simulator() {
                             onChange={(e) =>
                               updateChannel(ch.id, { planned: e.target.value })
                             }
+                            aria-invalid={plannedInvalidIds.has(ch.id)}
                             className="tabular"
                           />
                           <span className="suffix">部</span>
                         </div>
+                        {plannedInvalidIds.has(ch.id) && (
+                          <p className="field-error">
+                            予定部数は 0 以上の整数で入れてください
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="channel-toggles">
@@ -1163,6 +1198,12 @@ export function Simulator() {
               </p>
             )}
 
+            {plannedBlocked && (
+              <p className="price-range-row">
+                配分プラン:
+                予定部数を修正するまで計算できません（不正な予定部数の行があります）
+              </p>
+            )}
             {ready && allocation !== null && (
               <p className="price-range-row tabular">
                 配分プラン:{" "}

@@ -22,7 +22,7 @@ import {
   loadTally,
   saveTally,
   storageAvailable,
-  type SimMoneyParams,
+  type SimMoneyResult,
 } from "../storage";
 import { BrandMark } from "../chrome";
 
@@ -104,7 +104,10 @@ export function TallyApp() {
   const [online, setOnline] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [popKey, setPopKey] = useState(0);
-  const [simMoney, setSimMoney] = useState<SimMoneyParams | null>(null);
+  const [simMoney, setSimMoney] = useState<SimMoneyResult>({
+    ok: false,
+    reason: "not-configured",
+  });
 
   const [wakeSupported, setWakeSupported] = useState(false);
   const [keepAwake, setKeepAwake] = useState(false);
@@ -289,15 +292,21 @@ export function TallyApp() {
     remaining === 0;
   const totalCount = items.reduce((acc, i) => acc + i.count, 0);
 
+  // シミュレータの保存入力に不正がある場合は、その頒価・費用を一切使わない
+  // （黙って 0 扱いで過大/過小な損益を出さない。修正を促す明示状態にする）
+  const simInvalid = !simMoney.ok && simMoney.reason === "invalid";
+  const simPrice = simMoney.ok ? simMoney.price : null;
+
   /** 頒布物の実効頒価（頒布物ごとの設定 → シミュレータの頒価の順でフォールバック）。 */
   const unitPriceOf = (item: TallyItem): number | null =>
-    item.price ?? simMoney?.price ?? null;
+    item.price ?? simPrice;
   const activePrice = active === null ? null : unitPriceOf(active);
   // 全頒布物の頒価が確定しているときだけ全体の手取り・損益を出す（誤解を招く合計を出さない）
   const allPriced =
     items.length > 0 && items.every((i) => unitPriceOf(i) !== null);
   const totalRevenue = allPriced
-    ? items.reduce((acc, i) => acc + i.count * (unitPriceOf(i) ?? 0), 0)
+    ? // allPriced 分岐内なので unitPriceOf は non-null（?? 0 は型絞り込みのためで到達しない）
+      items.reduce((acc, i) => acc + i.count * (unitPriceOf(i) ?? 0), 0)
     : null;
 
   return (
@@ -431,7 +440,7 @@ export function TallyApp() {
                       min="0"
                       className="tabular"
                       placeholder={
-                        simMoney === null ? "未設定" : String(simMoney.price)
+                        simPrice === null ? "未設定" : String(simPrice)
                       }
                       value={
                         i.price === null || i.price === undefined
@@ -596,39 +605,46 @@ export function TallyApp() {
                 {soldOut && (
                   <p className="tally-money">完売おめでとうございます！</p>
                 )}
-                {showMoney && (
-                  <p className="tally-money tabular">
-                    {activePrice !== null ? (
-                      <>
-                        小計 {formatYen(active.count * activePrice)}（
-                        {active.count}部 × ¥
-                        {activePrice.toLocaleString("ja-JP")}）
-                      </>
-                    ) : (
-                      "この頒布物の頒価が未設定です。編集画面か計算機で頒価を入れると小計が出ます"
-                    )}
-                    {totalRevenue !== null && (
-                      <>
-                        <br />
-                        全体 実売 {totalCount}部 ・ 手取り{" "}
-                        {formatYen(totalRevenue)}
-                        {simMoney !== null && (
-                          <>
-                            {" ・ "}現在損益{" "}
-                            {formatSignedYen(totalRevenue - simMoney.baseCost)}
-                            （計算機の費用にもとづく概算）
-                          </>
-                        )}
-                      </>
-                    )}
-                    {totalRevenue === null && items.length > 1 && (
-                      <>
-                        <br />
-                        頒価が未設定の頒布物があるため、全体の手取り・損益は表示していません
-                      </>
-                    )}
-                  </p>
-                )}
+                {showMoney &&
+                  (simInvalid ? (
+                    <p className="tally-money">
+                      計算機（シミュレータ）の入力にエラーがあるため、損益を計算できません。計算機で修正してください
+                    </p>
+                  ) : (
+                    <p className="tally-money tabular">
+                      {activePrice !== null ? (
+                        <>
+                          小計 {formatYen(active.count * activePrice)}（
+                          {active.count}部 × ¥
+                          {activePrice.toLocaleString("ja-JP")}）
+                        </>
+                      ) : (
+                        "この頒布物の頒価が未設定です。編集画面か計算機で頒価を入れると小計が出ます"
+                      )}
+                      {totalRevenue !== null && (
+                        <>
+                          <br />
+                          全体 実売 {totalCount}部 ・ 手取り{" "}
+                          {formatYen(totalRevenue)}
+                          {simMoney.ok && (
+                            <>
+                              {" ・ "}現在損益{" "}
+                              {formatSignedYen(
+                                totalRevenue - simMoney.baseCost,
+                              )}
+                              （計算機の費用にもとづく概算）
+                            </>
+                          )}
+                        </>
+                      )}
+                      {totalRevenue === null && items.length > 1 && (
+                        <>
+                          <br />
+                          頒価が未設定の頒布物があるため、全体の手取り・損益は表示していません
+                        </>
+                      )}
+                    </p>
+                  ))}
                 <button
                   type="button"
                   className="btn btn-ghost"
