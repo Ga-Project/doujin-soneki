@@ -201,6 +201,21 @@ main() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { echo "[public-gate] cwd が git リポジトリではありません" >&2; exit 2; }
 
+  # 実行コンテキストガード: この gate の author/message 検査は「製品リポ自身の
+  # 全履歴」を対象とする設計。通常の monorepo checkout（製品ディレクトリが nested
+  # git リポでない状態）で実行すると git が monorepo に解決され、製品と無関係の
+  # 既存コミットの author/message で誤 FAIL する。git ルートが製品ディレクトリ
+  # 自身であることを検証し、そうでなければ明確なエラーで停止する。
+  local repo_root prod_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  prod_root="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+  if [ -z "$repo_root" ] || [ "$(cd "$repo_root" && pwd -P)" != "$prod_root" ]; then
+    echo "[public-gate] ERROR: git ルート($repo_root)が製品ディレクトリ($prod_root)と一致しません。" >&2
+    echo "[public-gate] monorepo コンテキストでは author/message 検査が製品外の履歴に及ぶため実行できません。" >&2
+    echo "[public-gate] 製品の git ルートで実行してください（nested repo 初期化後: 'ga new' が git init 済みの状態）。" >&2
+    exit 2
+  fi
+
   # 各チェックは失敗しても止めない(全漏洩を1回で洗い出す)。判定は GATE_FAIL に集約。
   check_authors  || true
   check_tree     || true
