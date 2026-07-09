@@ -1,0 +1,72 @@
+name: Deploy to GitHub Pages
+
+# 公開前ゲート → ビルド → Pages 公開を1つの workflow で直列化する。
+# public-gate が落ちたら build は skip され、Pages には何も公開されない
+# （size-fitter で起きた手動スクラブ漏れの再発防止: 公開とゲートを同一 workflow で結ぶ）。
+
+on:
+  push:
+    branches: [main]
+
+# 最小権限。書き込みが要るのは deploy job のみ（下で job 単位に付与）。
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 公開前ゲート（必須）。author / 内部用語 / 平文シークレットを弾く。
+  # build はこの job を needs にするため、ここで落ちると公開に進まない。
+  # ---------------------------------------------------------------------------
+  public-gate:
+    name: Public gate
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 全コミット履歴を走査する
+      - name: Install gitleaks (pinned)
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Run public gate
+        run: bash scripts/public-gate.sh
+
+  build:
+    name: Build (static export)
+    needs: public-gate # ゲート PASS が前提。fail 時は skip され公開されない。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

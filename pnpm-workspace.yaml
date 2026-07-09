@@ -1,0 +1,9 @@
+# doujin-soneki — standalone pnpm 設定。
+# このプロダクトは公開時に monorepo から切り離され単独リポになる。pnpm 11 は
+# 未許可の依存ビルドスクリプトを ERR_PNPM_IGNORED_BUILDS で hard-fail させるため、
+# 単独でビルドが通るよう許可するネイティブビルドをここで明示する(供給網の最小許可)。
+#
+#   unrs-resolver: eslint-config-next が使うリゾルバ(ネイティブ binding)。
+#                  `next lint` / install の build script に必要。
+allowBuilds:
+  unrs-resolver: true

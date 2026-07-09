@@ -1,0 +1,36 @@
+# internal-terms.txt — 公開リポに出してはいけない内部用語 / 社内固有情報の単一ソース。
+#
+# このファイルは2箇所から参照される(drift 防止の単一ソース):
+#   1. templates/web/scripts/public-gate.sh の (B) tree / (D) commit-message 検査
+#      (生成プロダクトにも scripts/internal-terms.txt として同梱される)
+#   2. ga-factory ルートの .github/workflows/ci.yml の template-scrub ガード
+#
+# 形式: 1 行 1 パターン(ERE = grep -E 構文)。
+#   - '#' 始まりの行と空行は無視される。
+#   - 行末の空白はトリムされる。
+#   - 機能 $0(位置パラメータ: $(dirname "$0") 等)は検査側がマスクしてから
+#     当てるため、コスト文脈 $0(例: '$0 方針')のみがここでヒットする。
+#
+# 区分: ブランディング / 社内固有情報 / コスト断定句 / コスト文脈 $0
+ga-factory
+当社[[:space:]]*Cloudflare
+既に[[:space:]]*(有料)?課金
+課金枠
+新規課金
+課金アカウント
+完全無料
+依存ゼロ
+ビルド依存ゼロ
+外部依存ゼロ
+client-side
+静的Web
+確認のヒント
+\$0[[:space:]]*方針
+\$0[[:space:]]*厳守
+\$0[[:space:]]*配信
+\$0[[:space:]]*ホスティング
+\$0[[:space:]]*静的
+\$0[[:space:]]*analytics
+やらないこと（\$0
+[・（(]\$0[）)・、。」]
+\$0[）)、。」]

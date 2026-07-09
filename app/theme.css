@@ -1,0 +1,90 @@
+/* doujin-soneki — per-product テーマ層（製品の "顔" をここで作る）
+ *
+ * globals.css は共通の構造・a11y・コンポーネント挙動を持つ "出発点" です。
+ * このファイルは globals.css の後に読み込まれ、:root トークンを上書きして
+ * 各製品に固有の個性（色・温度感・形・密度・タイポ）を与えます。
+ *
+ * ■ 必須ルール
+ *   - デフォルト（インディゴ・バイオレット）のまま出荷しない。最低でも accent と
+ *     neutral-hue を製品の世界観に合わせて変えること。
+ *   - accent は light/dark 双方で WCAG AA を満たす L 値にする（下の検証手順参照）。
+ *   - 構造クラス（.btn / .card / .hero …）の見た目を個別に CSS で書き換えない。
+ *     個性はトークンで出す。これで一貫性と a11y を保ったまま別物の顔になる。
+ *
+ * ■ 上書きできる主トークン（これだけで十分に化ける）
+ *   --accent-h / --accent-s / --accent-l   accent の色相・彩度・明度（tint/shade は自動派生）
+ *   --accent-fg                            accent 上の文字色（明 accent なら濃色に）
+ *   --neutral-hue / --neutral-chroma       グレースケールの温度感・色味の濃さ
+ *   --radius / --radius-sm / --radius-lg   形（角の丸み＝ブランドの硬軟）
+ *   --font-sans / --font-display           タイポ（display を変えると見出しの印象が大きく動く）
+ *   --density                              余白の伸縮（0.9 密 〜 1.1 ゆったり）
+ *
+ * ■ AA 検証手順（出荷前に必ず）
+ *   1) light: --accent と #ffffff/--accent-fg の対比 ≥ 4.5:1（テキスト）/ ≥ 3:1（大文字・UI境界）
+ *   2) dark : 上で持ち上げた accent と --bg の対比を同様に確認
+ *   ブラウザ devtools のコントラスト表示か任意のチェッカーで確認する。
+ *
+ * ▼ 使い方: 下の preset を 1 つ選んで :root に展開するか、個別トークンを直接書く。
+ *   layout.tsx は globals.css の後に ./theme.css を import 済み。
+ */
+
+:root {
+  /* === この製品の個性（編集する場所） ===
+   * 既定値は globals.css のインディゴ・バイオレット。製品に合わせて変更すること。
+   * 例として下に 4 つの mood preset をコメントで用意した。1 つ選んで値を写すか、
+   * 独自の HSL を入れる。 */
+
+  /* --- 例: そのまま使うと "プレースホルダのまま" 扱い。必ず触ること。 ---
+  --accent-h: 248;
+  --accent-s: 64%;
+  --accent-l: 56%;
+  --neutral-hue: 232;
+  --radius: 12px;
+  --density: 1;
+  */
+}
+
+/* =========================================================================
+ * Mood presets — :root にコピーして使う（値は light 基準・dark は globals が自動調整）
+ * ========================================================================= */
+
+/* 各 preset の L 値は light で white/accent・accent/bg ともに ≥4.9:1（AA 余裕）になるよう
+   検証済み。色相・彩度を動かす場合は theme.css 冒頭の AA 検証手順で再確認すること。 */
+
+/* 1) "Trust / Tooling" — 落ち着いたティール。実務ツール・計算機・自治体系に。
+   --accent-h: 188; --accent-s: 64%; --accent-l: 32%; --accent-fg: #ffffff;
+   --neutral-hue: 210; --neutral-chroma: 12%; --radius: 10px; --density: 0.95;
+*/
+
+/* 2) "Warm / Friendly" — 親しみのあるコーラル。図鑑・子ども向け・生活系に。
+   --accent-h: 14; --accent-s: 72%; --accent-l: 44%; --accent-fg: #ffffff;
+   --neutral-hue: 28; --neutral-chroma: 16%; --radius: 16px; --density: 1.05;
+*/
+
+/* 3) "Editorial / Premium" — 深いボルドー＋温かいグレー。読み物・上質訴求に。
+   --accent-h: 348; --accent-s: 56%; --accent-l: 44%; --accent-fg: #ffffff;
+   --neutral-hue: 24; --neutral-chroma: 10%; --radius: 6px; --density: 1.05;
+   --font-display: "Hiragino Mincho ProN", "Yu Mincho", serif;
+*/
+
+/* 4) "Fresh / Growth" — 鮮やかなエメラルド。健康・環境・進捗系に。
+   --accent-h: 158; --accent-s: 66%; --accent-l: 30%; --accent-fg: #ffffff;
+   --neutral-hue: 168; --neutral-chroma: 10%; --radius: 14px; --density: 1;
+*/
+
+/* =========================================================================
+ * このテンプレ自身のデモ（landing 見本）が使う顔。
+ * 製品では上の :root を編集して上書きする。ここは "個性が出る例" を体現する値。
+ * Mood 1（Trust / Tooling・ティール）を採用してデフォルト青/紫から離れていることを示す。
+ * ========================================================================= */
+:root {
+  --accent-h: 190;
+  --accent-s: 72%;
+  --accent-l: 32%; /* light で white/accent・accent/bg ともに ≥5:1（AA 余裕） */
+  --accent-fg: #ffffff;
+  --neutral-hue: 206;
+  --neutral-chroma: 12%;
+  --radius: 12px;
+  --radius-lg: 18px;
+  --density: 1;
+}
