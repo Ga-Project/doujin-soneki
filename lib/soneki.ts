@@ -101,6 +101,40 @@ export interface ChannelParams {
   perItemFee: number;
 }
 
+export type ChannelParseResult =
+  | { ok: true; params: ChannelParams }
+  | { ok: false; reason: "fee-empty" | "fee-invalid" | "per-item-invalid" };
+
+/**
+ * チャネル入力（手数料率%・定額手数料 円/冊）を検証して ChannelParams に解決する。
+ * 不正入力は黙って 0 に置き換えず、必ず reason 付きで無効を返す（見えている入力と
+ * 計算結果の食い違いを作らない）。
+ *   - 会場頒布（direct）は常に手数料 0 / 定額 0
+ *   - 手数料率: 空 = 入力待ち（fee-empty・エラー表示なしで除外）、0〜100 以外は fee-invalid
+ *   - 定額手数料: 空 = 0 扱い、負値・数値でない入力は per-item-invalid
+ */
+export function parseChannelParams(
+  kind: "direct" | "consign",
+  fee: string,
+  perItem: string,
+): ChannelParseResult {
+  if (kind === "direct") {
+    return { ok: true, params: { feeRate: 0, perItemFee: 0 } };
+  }
+  const feePct = parseFeePercent(fee);
+  if (feePct === null) {
+    return {
+      ok: false,
+      reason: fee.trim() === "" ? "fee-empty" : "fee-invalid",
+    };
+  }
+  const per = perItem.trim() === "" ? 0 : parseNum(perItem);
+  if (per === null) {
+    return { ok: false, reason: "per-item-invalid" };
+  }
+  return { ok: true, params: { feeRate: feePct / 100, perItemFee: per } };
+}
+
 /** 1 冊頒布あたりの手取り（円）。マイナスにもなり得る（定額控除 > 頒価×(1−率)）。 */
 export function netPerCopy(price: number, ch: ChannelParams): number {
   return price * (1 - ch.feeRate) - ch.perItemFee;

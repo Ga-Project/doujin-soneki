@@ -13,6 +13,7 @@ import {
   MAX_COPIES,
   netPerCopy,
   normalizeTier,
+  parseChannelParams,
   parseFeePercent,
   parseNum,
   perCopyAtSellout,
@@ -190,22 +191,26 @@ export function Simulator() {
         if (c === undefined) continue;
         color = c;
       }
-      const feePct = ch.kind === "direct" ? 0 : parseFeePercent(ch.fee);
-      const perItem = ch.kind === "direct" ? 0 : (parseNum(ch.perItem) ?? 0);
-      if (feePct === null) {
-        if (ch.fee !== "") {
+      // 手数料率・定額手数料を同じ検証経路で解決する。不正入力は黙って 0 に
+      // 置き換えず、エラーを出してチャネルごと計算/グラフから除外する。
+      const parsed = parseChannelParams(ch.kind, ch.fee, ch.perItem);
+      if (!parsed.ok) {
+        if (parsed.reason === "fee-invalid") {
           feeErrors.push({
             id: `fee-${ch.id}`,
             msg: `「${ch.name}」: 手数料率は 0〜100 の間で入れてください`,
           });
+        } else if (parsed.reason === "per-item-invalid") {
+          feeErrors.push({
+            id: `per-${ch.id}`,
+            msg: `「${ch.name}」: 定額手数料は 0 以上の数値で入れてください`,
+          });
         }
+        // fee-empty は入力待ち（エラー表示なしで除外）
         continue;
       }
       if (!ch.visible) continue;
-      const params: ChannelParams = {
-        feeRate: feePct / 100,
-        perItemFee: perItem,
-      };
+      const params: ChannelParams = parsed.params;
       const p = price ?? 0;
       seriesAll.push({
         id: ch.id,
@@ -745,6 +750,10 @@ export function Simulator() {
                   ch.kind === "consign" &&
                   ch.fee !== "" &&
                   parseFeePercent(ch.fee) === null;
+                const perItemInvalid =
+                  ch.kind === "consign" &&
+                  ch.perItem.trim() !== "" &&
+                  parseNum(ch.perItem) === null;
                 return (
                   <div
                     key={ch.id}
@@ -822,10 +831,16 @@ export function Simulator() {
                                     perItem: e.target.value,
                                   })
                                 }
+                                aria-invalid={perItemInvalid}
                                 className="tabular"
                               />
                               <span className="suffix">円/冊</span>
                             </div>
+                            {perItemInvalid && (
+                              <p className="field-error">
+                                定額手数料は 0 以上の数値で入れてください
+                              </p>
+                            )}
                           </div>
                         </>
                       )}
