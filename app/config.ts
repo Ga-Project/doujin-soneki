@@ -7,6 +7,12 @@ export const SITE_URL = "https://ga-project.github.io/doujin-soneki/";
 /** GoatCounter（cookieless・秘密キー不要）のコード。publish 時に実コードへ差し替える。 */
 export const GOATCOUNTER_CODE = "__GC_CODE__";
 
+/**
+ * 解析タグを出力してよいか。プレースホルダのままでは壊れた URL へのリクエストを
+ * 出さないよう layout 側でタグ自体を出力しない（実コードを入れると有効化される）。
+ */
+export const GOATCOUNTER_CONFIGURED = !GOATCOUNTER_CODE.includes("__");
+
 /** localStorage の保存名（スキーマ変更時はバージョンを上げて旧データを読み捨てる）。 */
 export const SIM_STORAGE_NAME = "soneki.sim.v1";
 export const TALLY_STORAGE_NAME = "soneki.tally.v1";
@@ -27,6 +33,8 @@ export const TALLY_STORAGE_NAME = "soneki.tally.v1";
  *     （サークル向け案内は会員向けのため。料率は委託先の案内で確認して入力）
  */
 export interface ConsignPreset {
+  /** React key 等に使う安定 ID。 */
+  id: string;
   /** 表示名（プレーンテキスト・中立表記）。 */
   name: string;
   /** 手数料率 %（未確認は空文字 = ユーザー入力）。 */
@@ -41,6 +49,7 @@ export interface ConsignPreset {
 
 export const CONSIGN_PRESETS: readonly ConsignPreset[] = [
   {
+    id: "preset-tora",
     name: "とらのあな",
     fee: "30",
     perItem: "0",
@@ -48,6 +57,7 @@ export const CONSIGN_PRESETS: readonly ConsignPreset[] = [
     note: "委託（専売・併売）の掛け率70%＝手数料30%。税抜の本体価格が基準です。",
   },
   {
+    id: "preset-melon",
     name: "メロンブックス",
     fee: "",
     perItem: "0",
@@ -55,10 +65,11 @@ export const CONSIGN_PRESETS: readonly ConsignPreset[] = [
     note: "公式の公開ページで料率を確認できなかったため、委託先の案内に記載の料率を入力してください。",
   },
   {
+    id: "preset-booth",
     name: "BOOTH",
     fee: "5.6",
     perItem: "45",
     sourceUrl: "https://booth.pm/announcements/832",
-    note: "サービス利用料5.6%＋45円/件（自宅から発送・2025年10月改定）。発送方法により異なります。",
+    note: "サービス利用料5.6%＋45円/件（自宅から発送・2025年10月改定）。定額分は注文単位のため、ここでは1冊=1件として保守側に概算します。発送方法により料率は異なります。",
   },
 ];

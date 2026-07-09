@@ -6,10 +6,19 @@
 // 系列の切替ボタンとツールチップは HTML 要素（フォーカス可視化・44px タップ領域の確保）。
 // 同じ数値は KPI と「表で見る」の DOM テキストでも必ず取得できる（このグラフは強化表現）。
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import {
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { compactYen, formatSignedYen, tickValues } from "@/lib/soneki";
 
-export type SeriesColor = "series-direct" | "series-c1" | "series-c2" | "series-c3";
+export type SeriesColor =
+  | "series-direct"
+  | "series-c1"
+  | "series-c2"
+  | "series-c3";
 
 export interface ChartSeries {
   id: string;
@@ -105,15 +114,16 @@ export function ProfitChart({
   const yBot = yMin - pad;
 
   const x = (k: number): number => PAD_L + (k / xMax) * PLOT_W;
-  const y = (v: number): number => PAD_T + ((yTop - v) / (yTop - yBot)) * PLOT_H;
+  const y = (v: number): number =>
+    PAD_T + ((yTop - v) / (yTop - yBot)) * PLOT_H;
   const y0 = y(0);
 
   const xTicks = tickValues(0, xMax, 5).filter((v) => v >= 0 && v <= xMax);
   const yTicks = tickValues(yBot, yTop, 5);
 
   // 主チャネルを最後（最前面）に描く
-  const ordered = [...series].sort((a, b) =>
-    (a.id === mainId ? 1 : 0) - (b.id === mainId ? 1 : 0),
+  const ordered = [...series].sort(
+    (a, b) => (a.id === mainId ? 1 : 0) - (b.id === mainId ? 1 : 0),
   );
   const main = series.find((s) => s.id === mainId) ?? null;
 
@@ -123,7 +133,10 @@ export function ProfitChart({
     if (svg === null || !ready) return;
     const rect = svg.getBoundingClientRect();
     const relX = ((e.clientX - rect.left) / rect.width) * W;
-    const k = Math.min(xMax, Math.max(0, Math.round(((relX - PAD_L) / PLOT_W) * xMax)));
+    const k = Math.min(
+      xMax,
+      Math.max(0, Math.round(((relX - PAD_L) / PLOT_W) * xMax)),
+    );
     setHover({ k, mode: e.pointerType === "touch" ? "touch" : "mouse" });
   };
   const handleLeave = (): void => {
@@ -154,7 +167,9 @@ export function ProfitChart({
   const pillText = breakEvenLabel ?? "";
   const pillW = estimatePillWidth(pillText);
   const pillCx =
-    bex === null ? 0 : Math.min(W - PAD_R - pillW / 2, Math.max(PAD_L + pillW / 2, bex));
+    bex === null
+      ? 0
+      : Math.min(W - PAD_R - pillW / 2, Math.max(PAD_L + pillW / 2, bex));
   const pillAbove = bex !== null && y0 - PAD_T > 56;
   const pillY = pillAbove ? y0 - 44 : y0 + 16;
 
@@ -203,12 +218,22 @@ export function ProfitChart({
             )}
             {/* ゾーンラベル（色だけに頼らないための直書きテキスト） */}
             {y0 - PAD_T > 26 && (
-              <text x={PAD_L + 10} y={PAD_T + 16} fontSize="11" fill="var(--text-dim)">
+              <text
+                x={PAD_L + 10}
+                y={PAD_T + 16}
+                fontSize="11"
+                fill="var(--text-dim)"
+              >
                 黒字
               </text>
             )}
             {H - PAD_B - y0 > 26 && (
-              <text x={PAD_L + 10} y={H - PAD_B - 10} fontSize="11" fill="var(--text-dim)">
+              <text
+                x={PAD_L + 10}
+                y={H - PAD_B - 10}
+                fontSize="11"
+                fill="var(--text-dim)"
+              >
                 赤字
               </text>
             )}
@@ -387,23 +412,31 @@ export function ProfitChart({
             )}
           </svg>
 
-          {/* 系列末端ラベル（HTML ボタン: クリックで主チャネル切替・44px タップ領域） */}
+          {/* 系列末端ラベル（HTML ボタン: クリックで主チャネル切替・44px タップ領域）。
+              left + max-width = 100% を対で指定し、コンテナ外へのはみ出しをゼロにする */}
           {ready &&
-            endLabels.map(({ s, topPct }) => (
-              <button
-                key={s.id}
-                type="button"
-                className={`chart-endlabel ${s.colorClass}`}
-                style={{ left: `${((W - PAD_R + 2) / W) * 100}%`, top: `${topPct}%` }}
-                aria-pressed={s.id === mainId}
-                aria-label={`${s.name}を主チャネルにする`}
-                onClick={() => onSelectMain(s.id)}
-              >
-                <span className="endlabel-pill">
-                  <span className="endlabel-text">{s.name}</span>
-                </span>
-              </button>
-            ))}
+            endLabels.map(({ s, topPct }) => {
+              const leftPct = ((W - PAD_R + 2) / W) * 100;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`chart-endlabel ${s.colorClass}`}
+                  style={{
+                    left: `${leftPct}%`,
+                    top: `${topPct}%`,
+                    maxWidth: `${100 - leftPct}%`,
+                  }}
+                  aria-pressed={s.id === mainId}
+                  aria-label={`${s.name}を主チャネルにする`}
+                  onClick={() => onSelectMain(s.id)}
+                >
+                  <span className="endlabel-pill">
+                    <span className="endlabel-text">{s.name}</span>
+                  </span>
+                </button>
+              );
+            })}
 
           {/* ツールチップ（マウスのみ。タッチは下の固定読み出し行へ） */}
           {hover !== null && hover.mode === "mouse" && ready && (
@@ -444,7 +477,9 @@ export function ProfitChart({
             ))}
           </>
         ) : (
-          <span>{ready ? "グラフに触れると部数ごとの損益を確認できます" : ""}</span>
+          <span>
+            {ready ? "グラフに触れると部数ごとの損益を確認できます" : ""}
+          </span>
         )}
       </div>
     </>

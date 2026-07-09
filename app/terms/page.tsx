@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { SiteHeader, SiteFooter } from "../chrome";
+import { SITE_URL } from "../config";
 
 export const metadata: Metadata = {
   title: "利用規約｜同人ソンエキ",
   description:
     "同人ソンエキの利用規約。本ツールは収支計算の補助を目的とし、計算結果の正確性は保証されません。頒布物の適法性や各委託先の規約遵守は利用者の責任となります。",
+  alternates: { canonical: `${SITE_URL}terms/` },
 };
 
 export default function TermsPage() {

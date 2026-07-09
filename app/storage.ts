@@ -87,7 +87,8 @@ function asTierRow(v: unknown): SavedTierRow | null {
 function asChannel(v: unknown): SavedChannel | null {
   if (!isRecord(v)) return null;
   const { id, name, fee, perItem, planned, visible, kind } = v;
-  if (!str(id) || !str(name) || !str(fee) || !str(perItem) || !str(planned)) return null;
+  if (!str(id) || !str(name) || !str(fee) || !str(perItem) || !str(planned))
+    return null;
   if (!bool(visible)) return null;
   if (kind !== "direct" && kind !== "consign") return null;
   const out: SavedChannel = { id, name, fee, perItem, planned, visible, kind };
@@ -98,7 +99,14 @@ function asChannel(v: unknown): SavedChannel | null {
 
 function asSimSaved(v: unknown): SimSaved | null {
   if (!isRecord(v) || v.v !== 1) return null;
-  const { price, selectedTierId, mainChannelId, fixedEvent, fixedOther, isSample } = v;
+  const {
+    price,
+    selectedTierId,
+    mainChannelId,
+    fixedEvent,
+    fixedOther,
+    isSample,
+  } = v;
   if (!str(price) || !str(selectedTierId) || !str(mainChannelId)) return null;
   if (!str(fixedEvent) || !str(fixedOther) || !bool(isSample)) return null;
   if (!Array.isArray(v.tiers) || !Array.isArray(v.channels)) return null;
@@ -130,10 +138,17 @@ function asSimSaved(v: unknown): SimSaved | null {
 
 function asTallyItem(v: unknown): TallyItem | null {
   if (!isRecord(v)) return null;
-  const { id, name, carryIn, count } = v;
+  const { id, name, carryIn, count, price } = v;
   if (!str(id) || !str(name) || !num(count)) return null;
   if (carryIn !== null && !num(carryIn)) return null;
-  return { id, name, carryIn: carryIn === null ? null : carryIn, count };
+  return {
+    id,
+    name,
+    carryIn: carryIn === null ? null : carryIn,
+    count,
+    // 旧データ（price なし）や不正値は「未設定」に読み替える（後方互換）
+    price: num(price) && price >= 0 ? price : null,
+  };
 }
 
 function asTallyEvent(v: unknown): TallyEvent | null {
@@ -252,7 +267,8 @@ export function deriveSimMoney(saved: SimSaved | null): SimMoneyParams | null {
   if (row === undefined) return null;
   const tier = normalizeTier(row);
   if (tier === null) return null;
-  const fixed = (parseNum(saved.fixedEvent) ?? 0) + (parseNum(saved.fixedOther) ?? 0);
+  const fixed =
+    (parseNum(saved.fixedEvent) ?? 0) + (parseNum(saved.fixedOther) ?? 0);
   return { price, baseCost: tier.totalCost + fixed };
 }
 

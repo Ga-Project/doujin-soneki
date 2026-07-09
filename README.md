@@ -37,9 +37,11 @@ GitHub Pages（GitHub Actions で自動デプロイ）。同梱の `.github/work
 `main` への push で `pnpm build` → `out/` を Pages に公開する。公開前に同じワークフロー内で
 `scripts/public-gate.sh`（公開前ゲート）が走り、不合格ならデプロイは行われない。
 
-プロジェクトページ（`<owner>.github.io/doujin-soneki/` のようなサブパス配信）の場合のみ、
-`next.config.mjs` に `basePath: "/doujin-soneki"` / `assetPrefix: "/doujin-soneki/"` を足す
-（ユーザー/組織ページやカスタムドメインのルート配信なら不要）。
+プロジェクトページ（`<owner>.github.io/doujin-soneki/` のようなサブパス配信）向けの
+`basePath` / `assetPrefix` は、`pages.yml` の build step が env `PAGES_BASE_PATH=/<リポジトリ名>`
+として `next.config.mjs` に渡す（ソース側の変更は不要）。ローカル開発・ルート配信では
+env 未設定のままルート基準で動く。カスタムドメイン等でルート配信する場合は
+`pages.yml` の該当 env を外す。
 
 ## 構成
 
@@ -63,10 +65,10 @@ doujin-soneki/
 ├─ public/                  # 静的アセット置き場
 ├─ test/
 │  └─ soneki.test.mjs       # node:test の単体テスト（計算ロジック）
-├─ next.config.mjs          # output: "export"（static export 設定）
-├─ tsconfig.json            # ../../tsconfig.base.json を extends
+├─ next.config.mjs          # output: "export" + PAGES_BASE_PATH（static export 設定）
+├─ tsconfig.json            # このリポジトリ単体で完結（extends なし・strict）
 ├─ scripts/public-gate.sh   # 公開前ゲート（CI と手元で共通に走る検査）
-├─ .github/workflows/       # pages.yml（公開前ゲート → ビルド → Pages 公開）
+├─ .github/workflows/       # pages.yml（公開前ゲート → ビルド → Pages 公開）・ci.yml（test/lint/typecheck）
 ├─ secrets.age              # age 暗号文（静的配信では通常は空の暗号箱・コミット可）
 ├─ age.recipient            # このプロダクト専用の age 公開鍵
 └─ .env.age.example         # env テンプレ（実行時サーバ秘密は原則不要・実値は書かない）
@@ -96,9 +98,10 @@ doujin-soneki/
 
 ## アナリティクス（任意・公開直前に有効化）
 
-`app/layout.tsx` に cookieless のアナリティクススロットをコメントで用意してある。
-公開直前に GoatCounter か Cloudflare Web Analytics のどちらか 1 つを有効化する。
-公開タグは秘密ではないのでコード直書きで構わない（実トークンはコミットしてよい公開コード）。
+GoatCounter（cookieless）を使う。`app/config.ts` の `GOATCOUNTER_CODE` に実コードを
+設定したときだけ `app/layout.tsx` がタグを出力する。プレースホルダ（`__GC_CODE__`）の
+ままではタグ自体を出力しないため、差し替え忘れで壊れたリクエストが飛ぶことはない。
+公開コードは秘密ではないのでコミットしてよい。
 
 ## 秘密情報（このプロダクト専用の age 鍵）
 

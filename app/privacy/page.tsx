@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { SiteHeader, SiteFooter } from "../chrome";
+import { SITE_URL } from "../config";
 
 export const metadata: Metadata = {
   title: "プライバシーポリシー｜同人ソンエキ",
   description:
     "同人ソンエキのプライバシーポリシー。個人情報は取得せず、入力データはブラウザ内のlocalStorageにのみ保存されます。アクセス解析にはGoatCounterを使用します。",
+  alternates: { canonical: `${SITE_URL}privacy/` },
 };
 
 export default function PrivacyPage() {
@@ -33,7 +35,8 @@ export default function PrivacyPage() {
 
             <h2>アクセス解析について</h2>
             <p>
-              本サイトは、利用状況の把握のためにアクセス解析サービス「GoatCounter」を使用しています。GoatCounter は Cookie
+              本サイトは、利用状況の把握のためにアクセス解析サービス「GoatCounter」を使用しています。GoatCounter
+              は Cookie
               を使用せず、個人を特定しない形でページの閲覧数等を集計します。取り扱いの詳細は
               GoatCounter のプライバシーポリシーをご確認ください。
             </p>

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { TallyApp } from "./TallyApp";
+import { SITE_URL } from "../config";
 
 const title = "即売会頒布カウンター｜同人ソンエキ";
 const description =
@@ -9,6 +10,7 @@ export const metadata: Metadata = {
   title,
   description,
   openGraph: { title, description, type: "website", locale: "ja_JP" },
+  alternates: { canonical: `${SITE_URL}tally/` },
 };
 
 export default function TallyPage() {

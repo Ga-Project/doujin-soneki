@@ -6,7 +6,7 @@ import "./globals.css";
 import "./theme.css";
 // 製品固有レイアウト（製図台シミュレータ／頒布タリー）。
 import "./product.css";
-import { SITE_URL, GOATCOUNTER_CODE } from "./config";
+import { SITE_URL, GOATCOUNTER_CODE, GOATCOUNTER_CONFIGURED } from "./config";
 
 const title = "同人ソンエキ｜同人誌の損益分岐シミュレータ＆頒布カウンター";
 const description =
@@ -37,7 +37,8 @@ export const metadata: Metadata = {
     url: SITE_URL,
     siteName: "同人ソンエキ",
   },
-  alternates: { canonical: SITE_URL },
+  // canonical はページごとに設定する（全ページ固定にするとサブページが
+  // 重複扱いでインデックス除外されるため、各 page.tsx の alternates で指定）
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -45,12 +46,15 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="ja">
       <body>
         {children}
-        {/* アクセス解析（cookieless・秘密キー不要）。GOATCOUNTER_CODE は publish 時に実コードへ。 */}
-        <Script
-          data-goatcounter={`https://${GOATCOUNTER_CODE}.goatcounter.com/count`}
-          src="//gc.zgo.at/count.js"
-          strategy="afterInteractive"
-        />
+        {/* アクセス解析（cookieless・秘密キー不要）。config.ts の GOATCOUNTER_CODE に
+            実コードを設定したときだけタグを出力する（プレースホルダのままなら出さない） */}
+        {GOATCOUNTER_CONFIGURED && (
+          <Script
+            data-goatcounter={`https://${GOATCOUNTER_CODE}.goatcounter.com/count`}
+            src="//gc.zgo.at/count.js"
+            strategy="afterInteractive"
+          />
+        )}
       </body>
     </html>
   );

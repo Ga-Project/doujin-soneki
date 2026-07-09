@@ -15,7 +15,12 @@ export function BrandMark({ size = 12 }: { size?: number }) {
       focusable="false"
     >
       {/* ゼロライン */}
-      <path d="M2 8h12" stroke="currentColor" strokeOpacity="0.45" strokeWidth="1.2" />
+      <path
+        d="M2 8h12"
+        stroke="currentColor"
+        strokeOpacity="0.45"
+        strokeWidth="1.2"
+      />
       {/* 右肩上がりの損益ライン */}
       <path
         d="M2 12.5 L14 3.5"

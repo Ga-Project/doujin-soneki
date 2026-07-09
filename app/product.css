@@ -8,6 +8,12 @@
 
 /* ===== 汎用ユーティリティ ===== */
 
+/* sticky ヘッダー(4rem)の下にアンカー・スクロール着地点が隠れないようにする。
+   scroll-padding は scrollIntoView にも適用される */
+html {
+  scroll-padding-top: calc(var(--header-h) + var(--sp-4));
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -485,7 +491,9 @@
 }
 .chart-wrap {
   position: relative;
-  min-height: 320px;
+  /* SVG の viewBox（720×450 = 16:10）と同じ比で高さを確保する。
+     固定 min-height は SVG 実描画高と乖離し、%配置のラベルがずれるので使わない */
+  aspect-ratio: 720 / 450;
 }
 .chart-wrap svg {
   width: 100%;
@@ -522,8 +530,9 @@
   gap: var(--sp-1);
   min-height: 44px;
   min-width: 44px;
-  /* 線末端の右余白（viewBox の PAD_R ぶん）に収め、コンテナ外へはみ出させない */
-  max-width: 13%;
+  /* 線末端の右余白（viewBox の PAD_R ぶん）に収める。実値はコンポーネント側が
+     left と対で inline 指定する（left + max-width = 100% を保証しはみ出しゼロ） */
+  max-width: 12%;
   padding: 0 var(--sp-1);
   border: none;
   background: transparent;
@@ -994,10 +1003,18 @@
   font-size: var(--fs-md);
 }
 .tally-edit-row {
-  display: grid;
-  grid-template-columns: 1fr 5.5rem 5.5rem auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-2);
-  align-items: end;
+  align-items: flex-end;
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.tally-edit-row .field-name {
+  flex: 2 1 12rem;
+}
+.tally-edit-row .field-num {
+  flex: 1 1 5.5rem;
 }
 .tally-edit-row .field label {
   font-size: var(--fs-xs);
@@ -1049,8 +1066,9 @@
   flex-wrap: wrap;
 }
 .restore-bar .btn {
-  min-height: 36px;
-  padding: var(--sp-1) var(--sp-3);
+  /* /tally（片手前提画面）にも出るためタッチターゲット 44px を維持する */
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
   font-size: var(--fs-xs);
 }
 .restore-bar .dismiss {

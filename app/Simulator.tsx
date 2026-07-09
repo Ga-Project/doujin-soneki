@@ -10,6 +10,8 @@ import {
   breakEvenCopies,
   breakEvenExact,
   formatSignedYen,
+  MAX_COPIES,
+  netPerCopy,
   normalizeTier,
   parseFeePercent,
   parseNum,
@@ -17,6 +19,7 @@ import {
   priceRange,
   profitAt,
   selloutProfit,
+  tableStep,
   type ChannelParams,
   type Tier,
 } from "@/lib/soneki";
@@ -97,10 +100,18 @@ function newId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${idSeq}`;
 }
 
-const CONSIGN_COLORS: readonly { colorClass: SeriesColor; colorVar: string; dash: string }[] = [
+const CONSIGN_COLORS: readonly {
+  colorClass: SeriesColor;
+  colorVar: string;
+  dash: string;
+}[] = [
   { colorClass: "series-c1", colorVar: "var(--chart-consign-1)", dash: "6 4" },
   { colorClass: "series-c2", colorVar: "var(--chart-consign-2)", dash: "2 4" },
-  { colorClass: "series-c3", colorVar: "var(--chart-consign-3)", dash: "10 3 2 3" },
+  {
+    colorClass: "series-c3",
+    colorVar: "var(--chart-consign-3)",
+    dash: "10 3 2 3",
+  },
 ];
 const MAX_CONSIGN = CONSIGN_COLORS.length;
 
@@ -120,6 +131,8 @@ export function Simulator() {
   const [storageOk, setStorageOk] = useState(true);
   const [restored, setRestored] = useState(false);
   const [restoreDismissed, setRestoreDismissed] = useState(false);
+  // 「表で見る」は開いているときだけ表を組み立てる（閉じた details 内の無駄な再生成防止）
+  const [tableOpen, setTableOpen] = useState(false);
   const chartBlockRef = useRef<HTMLDivElement | null>(null);
 
   // 初回マウント時に前回値を復元（SSR とのハイドレーション不一致を避けるため effect で行う）
@@ -155,19 +168,22 @@ export function Simulator() {
       state.tiers.map((t) => [t.id, normalizeTier(t)]),
     );
     const selectedTier = tiersNorm.get(state.selectedTierId) ?? null;
-    const fixedSum = (parseNum(state.fixedEvent) ?? 0) + (parseNum(state.fixedOther) ?? 0);
-    const baseCost = selectedTier === null ? 0 : selectedTier.totalCost + fixedSum;
+    const fixedSum =
+      (parseNum(state.fixedEvent) ?? 0) + (parseNum(state.fixedOther) ?? 0);
+    const baseCost =
+      selectedTier === null ? 0 : selectedTier.totalCost + fixedSum;
     const ready = price !== null && price > 0 && selectedTier !== null;
 
     // チャネル → 系列
     let consignIndex = 0;
     const seriesAll: SeriesInfo[] = [];
-    const feeErrors: string[] = [];
+    const feeErrors: { id: string; msg: string }[] = [];
     for (const ch of state.channels) {
-      let color: { colorClass: SeriesColor; colorVar: string; dash?: string } = {
-        colorClass: "series-direct",
-        colorVar: "var(--chart-direct)",
-      };
+      let color: { colorClass: SeriesColor; colorVar: string; dash?: string } =
+        {
+          colorClass: "series-direct",
+          colorVar: "var(--chart-direct)",
+        };
       if (ch.kind === "consign") {
         const c = CONSIGN_COLORS[consignIndex];
         consignIndex += 1;
@@ -178,48 +194,83 @@ export function Simulator() {
       const perItem = ch.kind === "direct" ? 0 : (parseNum(ch.perItem) ?? 0);
       if (feePct === null) {
         if (ch.fee !== "") {
-          feeErrors.push(`「${ch.name}」: 手数料率は 0〜100 の間で入れてください`);
+          feeErrors.push({
+            id: `fee-${ch.id}`,
+            msg: `「${ch.name}」: 手数料率は 0〜100 の間で入れてください`,
+          });
         }
         continue;
       }
       if (!ch.visible) continue;
-      const params: ChannelParams = { feeRate: feePct / 100, perItemFee: perItem };
+      const params: ChannelParams = {
+        feeRate: feePct / 100,
+        perItemFee: perItem,
+      };
       const p = price ?? 0;
       seriesAll.push({
         id: ch.id,
         name: ch.name,
         kind: ch.kind,
         params,
-        net: p * (1 - params.feeRate) - params.perItemFee,
+        net: netPerCopy(p, params),
         breakEven: ready ? breakEvenCopies(p, params, baseCost) : null,
         breakEvenExactK: ready ? breakEvenExact(p, params, baseCost) : null,
         sellout:
-          ready && selectedTier !== null ? selloutProfit(selectedTier.copies, p, params, baseCost) : 0,
+          ready && selectedTier !== null
+            ? selloutProfit(selectedTier.copies, p, params, baseCost)
+            : 0,
         ...color,
       });
     }
 
     const mainSeries =
-      seriesAll.find((s) => s.id === state.mainChannelId) ?? seriesAll[0] ?? null;
+      seriesAll.find((s) => s.id === state.mainChannelId) ??
+      seriesAll[0] ??
+      null;
 
     // 入力エラー（状態デザイン: 計算不能）
-    const rowErrors: string[] = [];
+    const rowErrors: { id: string; msg: string }[] = [];
+    let rowIncomplete = false;
+    let rowOverMax = false;
     for (const t of state.tiers) {
-      const anyInput = t.copies !== "" || t.unit !== "" || t.total !== "";
-      if (anyInput && tiersNorm.get(t.id) === null) {
-        rowErrors.push("部数と単価をセットで入れてください（例: 100部・単価320円）");
-        break;
+      const anyRowInput = t.copies !== "" || t.unit !== "" || t.total !== "";
+      if (!anyRowInput) continue;
+      const copiesN = Number(t.copies);
+      if (Number.isInteger(copiesN) && copiesN > MAX_COPIES) {
+        rowOverMax = true;
+      } else if (tiersNorm.get(t.id) === null) {
+        rowIncomplete = true;
       }
+    }
+    if (rowOverMax) {
+      rowErrors.push({
+        id: "row-max",
+        msg: `部数は ${MAX_COPIES.toLocaleString("ja-JP")}部までに対応しています`,
+      });
+    }
+    if (rowIncomplete) {
+      rowErrors.push({
+        id: "row-incomplete",
+        msg: "部数と単価をセットで入れてください（例: 100部・単価320円）",
+      });
     }
     const anyInput =
       state.price !== "" ||
-      state.tiers.some((t) => t.copies !== "" || t.unit !== "" || t.total !== "");
-    const missing: string[] = [];
+      state.tiers.some(
+        (t) => t.copies !== "" || t.unit !== "" || t.total !== "",
+      );
+    const missing: { id: string; msg: string }[] = [];
     if (anyInput && (price === null || price <= 0)) {
-      missing.push("頒価が入っていません。1冊いくらで頒布するかを入れてください");
+      missing.push({
+        id: "missing-price",
+        msg: "頒価が入っていません。1冊いくらで頒布するかを入れてください",
+      });
     }
     if (anyInput && selectedTier === null) {
-      missing.push("印刷費の単価表で「この部数で刷る」行を完成させて選んでください");
+      missing.push({
+        id: "missing-tier",
+        msg: "印刷費の単価表で「この部数で刷る」行を完成させて選んでください",
+      });
     }
 
     // 配分プラン（予定部数）
@@ -285,29 +336,42 @@ export function Simulator() {
     const selected = s.tiers.find((t) => t.id === s.selectedTierId);
     if (selected !== undefined && normalizeTier(selected) !== null) return s;
     const firstComplete = s.tiers.find((t) => normalizeTier(t) !== null);
-    return firstComplete === undefined ? s : { ...s, selectedTierId: firstComplete.id };
+    return firstComplete === undefined
+      ? s
+      : { ...s, selectedTierId: firstComplete.id };
   };
 
+  // 入力中（キーストローク）には選択行を動かさない。値を消して入れ直す途中で
+  // 選択が別の行へ飛ぶのを防ぐため、選択の自動補正は blur / 行削除時に限定する。
   const updateTier = (id: string, patch: Partial<SavedTierRow>): void => {
-    edit((s) =>
-      ensureSelection({
-        ...s,
-        tiers: s.tiers.map((t) => (t.id === id ? { ...t, ...patch } : t)),
-      }),
-    );
+    edit((s) => ({
+      ...s,
+      tiers: s.tiers.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    }));
+  };
+
+  /** 単価表の入力を離れたタイミングで、無効になった選択行を安全に補正する。 */
+  const fixSelectionOnBlur = (): void => {
+    setState((s) => ensureSelection(s));
   };
 
   const addTier = (): void => {
     edit((s) => ({
       ...s,
-      tiers: [...s.tiers, { id: newId("t"), copies: "", unit: "", total: "", basis: "unit" }],
+      tiers: [
+        ...s.tiers,
+        { id: newId("t"), copies: "", unit: "", total: "", basis: "unit" },
+      ],
     }));
   };
 
   const removeTier = (id: string): void => {
     edit((s) => {
       if (s.tiers.length <= 2) return s; // 最低 2 行は維持
-      return ensureSelection({ ...s, tiers: s.tiers.filter((t) => t.id !== id) });
+      return ensureSelection({
+        ...s,
+        tiers: s.tiers.filter((t) => t.id !== id),
+      });
     });
   };
 
@@ -318,9 +382,16 @@ export function Simulator() {
     }));
   };
 
-  const addChannel = (preset: { name: string; fee: string; perItem: string; note?: string; sourceUrl?: string }): void => {
+  const addChannel = (preset: {
+    name: string;
+    fee: string;
+    perItem: string;
+    note?: string;
+    sourceUrl?: string;
+  }): void => {
     edit((s) => {
-      if (s.channels.filter((c) => c.kind === "consign").length >= MAX_CONSIGN) return s;
+      if (s.channels.filter((c) => c.kind === "consign").length >= MAX_CONSIGN)
+        return s;
       const ch: SavedChannel = {
         id: newId("c"),
         name: preset.name,
@@ -378,7 +449,12 @@ export function Simulator() {
   const mainSellout = mainSeries?.sellout ?? 0;
   const mainPerCopy =
     ready && mainSeries !== null && selectedTier !== null && price !== null
-      ? perCopyAtSellout(selectedTier.copies, price, mainSeries.params, baseCost)
+      ? perCopyAtSellout(
+          selectedTier.copies,
+          price,
+          mainSeries.params,
+          baseCost,
+        )
       : null;
   const neverProfits = ready && mainSeries !== null && mainSeries.net <= 0;
 
@@ -410,9 +486,17 @@ export function Simulator() {
     <div>
       {/* 状態バー群（復元・保存不可・サンプル） */}
       {restored && !restoreDismissed && (
-        <div className="alert restore-bar" role="status" style={{ marginBottom: "var(--sp-4)" }}>
+        <div
+          className="alert restore-bar"
+          role="status"
+          style={{ marginBottom: "var(--sp-4)" }}
+        >
           <span>前回の入力を復元しました</span>
-          <button type="button" className="btn btn-secondary" onClick={resetAll}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={resetAll}
+          >
             最初からやり直す
           </button>
           <button
@@ -426,7 +510,11 @@ export function Simulator() {
         </div>
       )}
       {loaded && !storageOk && (
-        <div className="alert alert-warn" role="status" style={{ marginBottom: "var(--sp-4)" }}>
+        <div
+          className="alert alert-warn"
+          role="status"
+          style={{ marginBottom: "var(--sp-4)" }}
+        >
           この環境ではデータを保存できません。ページを閉じると入力が消えます
         </div>
       )}
@@ -459,8 +547,12 @@ export function Simulator() {
                   min="0"
                   step="10"
                   value={state.price}
-                  onChange={(e) => edit((s) => ({ ...s, price: e.target.value }))}
-                  aria-invalid={state.price !== "" && (price === null || price <= 0)}
+                  onChange={(e) =>
+                    edit((s) => ({ ...s, price: e.target.value }))
+                  }
+                  aria-invalid={
+                    state.price !== "" && (price === null || price <= 0)
+                  }
                   className="tabular"
                 />
                 <span className="suffix">円</span>
@@ -475,7 +567,8 @@ export function Simulator() {
               刷り部数は ② の単価表から「この部数で刷る」行を選びます
               {selectedTier !== null && (
                 <>
-                  （現在: <strong className="tabular">{selectedTier.copies}部</strong>）
+                  （現在:{" "}
+                  <strong className="tabular">{selectedTier.copies}部</strong>）
                 </>
               )}
             </p>
@@ -524,7 +617,10 @@ export function Simulator() {
                           ? ""
                           : String(Math.round(norm.totalCost));
                     return (
-                      <tr key={t.id} className={selected ? "is-selected" : undefined}>
+                      <tr
+                        key={t.id}
+                        className={selected ? "is-selected" : undefined}
+                      >
                         <td>
                           <label className="tier-select">
                             <input
@@ -533,7 +629,10 @@ export function Simulator() {
                               checked={selected}
                               disabled={norm === null}
                               onChange={() =>
-                                setState((s) => ({ ...s, selectedTierId: t.id }))
+                                setState((s) => ({
+                                  ...s,
+                                  selectedTierId: t.id,
+                                }))
                               }
                               aria-label={`この部数で刷る（${t.copies === "" ? `${i + 1}行目` : `${t.copies}部`}）`}
                             />
@@ -547,7 +646,10 @@ export function Simulator() {
                             step="1"
                             className="col-copies tabular"
                             value={t.copies}
-                            onChange={(e) => updateTier(t.id, { copies: e.target.value })}
+                            onChange={(e) =>
+                              updateTier(t.id, { copies: e.target.value })
+                            }
+                            onBlur={fixSelectionOnBlur}
                             aria-label={`${i + 1}行目の部数`}
                           />
                         </td>
@@ -559,8 +661,12 @@ export function Simulator() {
                             className={`col-money tabular${t.basis === "total" ? " is-derived" : ""}`}
                             value={unitValue}
                             onChange={(e) =>
-                              updateTier(t.id, { unit: e.target.value, basis: "unit" })
+                              updateTier(t.id, {
+                                unit: e.target.value,
+                                basis: "unit",
+                              })
                             }
+                            onBlur={fixSelectionOnBlur}
                             aria-label={`${i + 1}行目の単価（円/冊）`}
                           />
                         </td>
@@ -572,8 +678,12 @@ export function Simulator() {
                             className={`col-money tabular${t.basis === "unit" ? " is-derived" : ""}`}
                             value={totalValue}
                             onChange={(e) =>
-                              updateTier(t.id, { total: e.target.value, basis: "total" })
+                              updateTier(t.id, {
+                                total: e.target.value,
+                                basis: "total",
+                              })
                             }
+                            onBlur={fixSelectionOnBlur}
                             aria-label={`${i + 1}行目の総額（円）`}
                           />
                         </td>
@@ -594,16 +704,24 @@ export function Simulator() {
                 </tbody>
               </table>
             </div>
-            {rowErrors.map((msg) => (
-              <p key={msg} className="field-error">
-                {msg}
+            {rowErrors.map((e) => (
+              <p key={e.id} className="field-error">
+                {e.msg}
               </p>
             ))}
             <div className="preset-row">
-              <button type="button" className="btn btn-secondary" onClick={addTier}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={addTier}
+              >
                 ＋ 行を追加
               </button>
-              <button type="button" className="btn btn-ghost" onClick={applySample}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={applySample}
+              >
                 サンプルの数字で試す
               </button>
             </div>
@@ -624,14 +742,19 @@ export function Simulator() {
               {state.channels.map((ch) => {
                 const s = seriesAll.find((x) => x.id === ch.id);
                 const feeInvalid =
-                  ch.kind === "consign" && ch.fee !== "" && parseFeePercent(ch.fee) === null;
+                  ch.kind === "consign" &&
+                  ch.fee !== "" &&
+                  parseFeePercent(ch.fee) === null;
                 return (
                   <div
                     key={ch.id}
                     className={`channel-card${state.mainChannelId === ch.id ? " is-main" : ""}`}
                   >
                     <div className="channel-head">
-                      <span className={s?.colorClass ?? "series-direct"} aria-hidden="true">
+                      <span
+                        className={s?.colorClass ?? "series-direct"}
+                        aria-hidden="true"
+                      >
                         <span className="series-swatch" />
                       </span>
                       {ch.kind === "direct" ? (
@@ -640,7 +763,9 @@ export function Simulator() {
                         <input
                           type="text"
                           value={ch.name}
-                          onChange={(e) => updateChannel(ch.id, { name: e.target.value })}
+                          onChange={(e) =>
+                            updateChannel(ch.id, { name: e.target.value })
+                          }
                           aria-label="委託先の名前"
                         />
                       )}
@@ -669,7 +794,9 @@ export function Simulator() {
                                 max="100"
                                 step="0.1"
                                 value={ch.fee}
-                                onChange={(e) => updateChannel(ch.id, { fee: e.target.value })}
+                                onChange={(e) =>
+                                  updateChannel(ch.id, { fee: e.target.value })
+                                }
                                 aria-invalid={feeInvalid}
                                 className="tabular"
                               />
@@ -691,7 +818,9 @@ export function Simulator() {
                                 min="0"
                                 value={ch.perItem}
                                 onChange={(e) =>
-                                  updateChannel(ch.id, { perItem: e.target.value })
+                                  updateChannel(ch.id, {
+                                    perItem: e.target.value,
+                                  })
                                 }
                                 className="tabular"
                               />
@@ -701,7 +830,9 @@ export function Simulator() {
                         </>
                       )}
                       <div className="field">
-                        <label htmlFor={`plan-${ch.id}`}>予定部数（任意）</label>
+                        <label htmlFor={`plan-${ch.id}`}>
+                          予定部数（任意）
+                        </label>
                         <div className="suffix-field">
                           <input
                             id={`plan-${ch.id}`}
@@ -710,7 +841,9 @@ export function Simulator() {
                             min="0"
                             step="1"
                             value={ch.planned}
-                            onChange={(e) => updateChannel(ch.id, { planned: e.target.value })}
+                            onChange={(e) =>
+                              updateChannel(ch.id, { planned: e.target.value })
+                            }
                             className="tabular"
                           />
                           <span className="suffix">部</span>
@@ -722,7 +855,9 @@ export function Simulator() {
                         <input
                           type="checkbox"
                           checked={ch.visible}
-                          onChange={(e) => updateChannel(ch.id, { visible: e.target.checked })}
+                          onChange={(e) =>
+                            updateChannel(ch.id, { visible: e.target.checked })
+                          }
                         />
                         グラフに表示
                       </label>
@@ -742,7 +877,11 @@ export function Simulator() {
                         {ch.sourceUrl !== undefined && (
                           <>
                             {" "}
-                            <a href={ch.sourceUrl} target="_blank" rel="noopener noreferrer">
+                            <a
+                              href={ch.sourceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
                               出典 ↗
                             </a>
                           </>
@@ -756,7 +895,7 @@ export function Simulator() {
             <div className="preset-row" role="group" aria-label="委託先を追加">
               {CONSIGN_PRESETS.map((p) => (
                 <button
-                  key={p.name}
+                  key={p.id}
                   type="button"
                   className="btn btn-secondary"
                   disabled={consignCount >= MAX_CONSIGN}
@@ -766,7 +905,9 @@ export function Simulator() {
                       fee: p.fee,
                       perItem: p.perItem === "" ? "0" : p.perItem,
                       note: p.note,
-                      ...(p.sourceUrl === null ? {} : { sourceUrl: p.sourceUrl }),
+                      ...(p.sourceUrl === null
+                        ? {}
+                        : { sourceUrl: p.sourceUrl }),
                     })
                   }
                 >
@@ -777,7 +918,9 @@ export function Simulator() {
                 type="button"
                 className="btn btn-ghost"
                 disabled={consignCount >= MAX_CONSIGN}
-                onClick={() => addChannel({ name: "委託先", fee: "", perItem: "0" })}
+                onClick={() =>
+                  addChannel({ name: "委託先", fee: "", perItem: "0" })
+                }
               >
                 ＋ その他の委託先
               </button>
@@ -800,14 +943,18 @@ export function Simulator() {
                     inputMode="numeric"
                     min="0"
                     value={state.fixedEvent}
-                    onChange={(e) => edit((s) => ({ ...s, fixedEvent: e.target.value }))}
+                    onChange={(e) =>
+                      edit((s) => ({ ...s, fixedEvent: e.target.value }))
+                    }
                     className="tabular"
                   />
                   <span className="suffix">円</span>
                 </div>
               </div>
               <div className="field">
-                <label htmlFor="fixed-other">その他の固定費（交通費・備品など）</label>
+                <label htmlFor="fixed-other">
+                  その他の固定費（交通費・備品など）
+                </label>
                 <div className="suffix-field">
                   <input
                     id="fixed-other"
@@ -815,13 +962,17 @@ export function Simulator() {
                     inputMode="numeric"
                     min="0"
                     value={state.fixedOther}
-                    onChange={(e) => edit((s) => ({ ...s, fixedOther: e.target.value }))}
+                    onChange={(e) =>
+                      edit((s) => ({ ...s, fixedOther: e.target.value }))
+                    }
                     className="tabular"
                   />
                   <span className="suffix">円</span>
                 </div>
               </div>
-              <p className="field-hint">既定は 0 円。オプション費用・送料などもここに加算できます</p>
+              <p className="field-hint">
+                既定は 0 円。オプション費用・送料などもここに加算できます
+              </p>
             </div>
           </details>
         </div>
@@ -833,9 +984,9 @@ export function Simulator() {
             {errorList.length > 0 && (
               <div className="alert" role="status">
                 <div>
-                  {errorList.map((msg) => (
-                    <p key={msg} style={{ margin: 0 }}>
-                      {msg}
+                  {errorList.map((e) => (
+                    <p key={e.id} style={{ margin: 0 }}>
+                      {e.msg}
                     </p>
                   ))}
                 </div>
@@ -855,7 +1006,9 @@ export function Simulator() {
                   )}
                 </span>
                 {neverProfits && (
-                  <span className="badge badge-warn">この条件では黒字になりません</span>
+                  <span className="badge badge-warn">
+                    この条件では黒字になりません
+                  </span>
                 )}
               </div>
               <div className="stat">
@@ -872,10 +1025,16 @@ export function Simulator() {
                 <span className="stat-label">1冊あたり</span>
                 <span
                   className={`stat-value tabular${
-                    ready && mainPerCopy !== null ? (mainPerCopy >= 0 ? " is-ok" : " is-err") : ""
+                    ready && mainPerCopy !== null
+                      ? mainPerCopy >= 0
+                        ? " is-ok"
+                        : " is-err"
+                      : ""
                   }`}
                 >
-                  {ready && mainPerCopy !== null ? formatSignedYen(mainPerCopy) : "—"}
+                  {ready && mainPerCopy !== null
+                    ? formatSignedYen(mainPerCopy)
+                    : "—"}
                 </span>
               </div>
             </div>
@@ -890,13 +1049,18 @@ export function Simulator() {
                       <span className={s.colorClass} aria-hidden="true">
                         <span className="series-swatch" />
                       </span>
-                      {s.name}: {s.breakEven === null ? "黒字化なし" : `${s.breakEven}部`}
+                      {s.name}:{" "}
+                      {s.breakEven === null ? "黒字化なし" : `${s.breakEven}部`}
                     </span>
                   ))}
               </div>
             )}
 
-            <p className="result-sentence" aria-live="polite" aria-atomic="true">
+            <p
+              className="result-sentence"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               {sentence}
             </p>
 
@@ -910,16 +1074,19 @@ export function Simulator() {
 
             {ready && allocation !== null && (
               <p className="price-range-row tabular">
-                配分プラン: {plans.map((p) => `${p.name} ${p.copies}部`).join(" ＋ ")} →{" "}
+                配分プラン:{" "}
+                {plans.map((p) => `${p.name} ${p.copies}部`).join(" ＋ ")} →{" "}
                 {formatSignedYen(allocation)}
-                {selectedTier !== null && plannedTotal > selectedTier.copies && (
-                  <>
-                    {" "}
-                    <span className="badge badge-warn">
-                      予定部数の合計が刷り部数（{selectedTier.copies}部）を超えています
-                    </span>
-                  </>
-                )}
+                {selectedTier !== null &&
+                  plannedTotal > selectedTier.copies && (
+                    <>
+                      {" "}
+                      <span className="badge badge-warn">
+                        予定部数の合計が刷り部数（{selectedTier.copies}
+                        部）を超えています
+                      </span>
+                    </>
+                  )}
               </p>
             )}
           </div>
@@ -936,15 +1103,23 @@ export function Simulator() {
               breakEvenLabel={
                 mainBreakEven === null ? null : `損益分岐 ${mainBreakEven}部`
               }
-              selloutLabel={ready ? `完売 ${formatSignedYen(mainSellout)}` : null}
+              selloutLabel={
+                ready ? `完売 ${formatSignedYen(mainSellout)}` : null
+              }
               selloutPositive={mainSellout >= 0}
               onSelectMain={selectMain}
               ariaLabel={chartAria}
             >
               {!ready && (
                 <div className="chart-empty-msg">
-                  <p style={{ margin: 0 }}>単価表を入れると、ここに損益カーブが描かれます</p>
-                  <button type="button" className="btn btn-secondary" onClick={applySample}>
+                  <p style={{ margin: 0 }}>
+                    単価表を入れると、ここに損益カーブが描かれます
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={applySample}
+                  >
                     サンプルの数字で試す
                   </button>
                 </div>
@@ -952,74 +1127,102 @@ export function Simulator() {
             </ProfitChart>
           </div>
 
-          {/* 表で見る（計算根拠の全数値開示） */}
+          {/* 表で見る（計算根拠の全数値開示・開いている間だけ表を組み立てる） */}
           <div className="datatable-block">
-            <details>
-              <summary>表で見る（25部刻みの損益）</summary>
-              {ready && selectedTier !== null && price !== null ? (
-                <div className="table-scroll">
-                  <table className="data-table tabular">
-                    <thead>
-                      <tr>
-                        <th scope="col">頒布数</th>
-                        {seriesAll.map((s) => (
-                          <th key={s.id} scope="col">
-                            {s.name}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(() => {
-                        const ks: number[] = [];
-                        for (let k = 0; k < selectedTier.copies; k += 25) ks.push(k);
-                        ks.push(selectedTier.copies);
-                        return ks.map((k) => {
-                          const isBe =
-                            mainBreakEven !== null &&
-                            k >= mainBreakEven &&
-                            k - 25 < mainBreakEven;
-                          return (
-                            <tr key={k} className={isBe ? "is-breakeven" : undefined}>
-                              <td>{k}部</td>
-                              {seriesAll.map((s) => {
-                                const v = profitAt(k, price, s.params, baseCost);
-                                return (
-                                  <td key={s.id} className={v >= 0 ? "is-ok" : "is-err"}>
-                                    {formatSignedYen(v)}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          );
-                        });
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p style={{ padding: "0 var(--sp-4) var(--sp-4)" }} className="field-hint">
-                  入力が完了すると、部数ごとの損益を表で確認できます
-                </p>
-              )}
+            <details onToggle={(e) => setTableOpen(e.currentTarget.open)}>
+              <summary>
+                表で見る（
+                {ready && selectedTier !== null
+                  ? `${tableStep(selectedTier.copies)}部`
+                  : "25部"}
+                刻みの損益）
+              </summary>
+              {tableOpen &&
+                (ready && selectedTier !== null && price !== null ? (
+                  <div className="table-scroll">
+                    <table className="data-table tabular">
+                      <thead>
+                        <tr>
+                          <th scope="col">頒布数</th>
+                          {seriesAll.map((s) => (
+                            <th key={s.id} scope="col">
+                              {s.name}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          // 刻み幅は行数が増えすぎないよう部数に応じて自動拡大（≤~40行）
+                          const step = tableStep(selectedTier.copies);
+                          const ks: number[] = [];
+                          for (let k = 0; k < selectedTier.copies; k += step)
+                            ks.push(k);
+                          ks.push(selectedTier.copies);
+                          return ks.map((k) => {
+                            const isBe =
+                              mainBreakEven !== null &&
+                              k >= mainBreakEven &&
+                              k - step < mainBreakEven;
+                            return (
+                              <tr
+                                key={k}
+                                className={isBe ? "is-breakeven" : undefined}
+                              >
+                                <td>{k}部</td>
+                                {seriesAll.map((s) => {
+                                  const v = profitAt(
+                                    k,
+                                    price,
+                                    s.params,
+                                    baseCost,
+                                  );
+                                  return (
+                                    <td
+                                      key={s.id}
+                                      className={v >= 0 ? "is-ok" : "is-err"}
+                                    >
+                                      {formatSignedYen(v)}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p
+                    style={{ padding: "0 var(--sp-4) var(--sp-4)" }}
+                    className="field-hint"
+                  >
+                    入力が完了すると、部数ごとの損益を表で確認できます
+                  </p>
+                ))}
             </details>
           </div>
         </div>
       </div>
 
       {/* モバイル: 下端固定ミニ結果バー（タップでグラフへ） */}
-      <button type="button" className="mini-result tabular" onClick={scrollToChart}>
+      <button
+        type="button"
+        className="mini-result tabular"
+        onClick={scrollToChart}
+      >
         {ready ? (
           <span>
-            {neverProfits || mainBreakEven === null ? "黒字化なし" : `分岐 ${mainBreakEven}部`}
+            {neverProfits || mainBreakEven === null
+              ? "黒字化なし"
+              : `分岐 ${mainBreakEven}部`}
             {" ・ "}完売 {formatSignedYen(mainSellout)}
           </span>
         ) : (
           <span className="mini-hint">入力を続けると損益が出ます</span>
         )}
-        <span className="mini-arrow" aria-hidden="true">
-          ↑ グラフ
-        </span>
+        <span className="mini-arrow">グラフへ</span>
       </button>
     </div>
   );

@@ -52,6 +52,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+        env:
+          # プロジェクトページ（owner.github.io/<repo>/）配信のサブパスをアセットに反映する。
+          # 未設定だと /_next/... をルートへ取りに行き、公開初回から全 404 になる。
+          PAGES_BASE_PATH: /${{ github.event.repository.name }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out

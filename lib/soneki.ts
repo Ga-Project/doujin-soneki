@@ -19,10 +19,14 @@ export function parseNum(raw: string): number | null {
   return n;
 }
 
-/** 1 以上の整数のみ受理（部数用）。 */
+/** 部数の実務上限。これを超える入力は受理しない（DOM 生成・描画の安全弁も兼ねる）。 */
+export const MAX_COPIES = 100000;
+
+/** 1 以上 MAX_COPIES 以下の整数のみ受理（部数用）。 */
 export function parseCopies(raw: string): number | null {
   const n = parseNum(raw);
-  if (n === null || !Number.isInteger(n) || n < 1) return null;
+  if (n === null || !Number.isInteger(n) || n < 1 || n > MAX_COPIES)
+    return null;
   return n;
 }
 
@@ -74,7 +78,10 @@ export function normalizeTier(input: TierInput): Tier | null {
  * 階段状単価の区間選択: 部数 copies に適用される行（copies 以下で最大の部数の行）を返す。
  * どの行の部数にも届かない（最小行未満）場合は null。
  */
-export function pickTierForCopies(tiers: readonly Tier[], copies: number): Tier | null {
+export function pickTierForCopies(
+  tiers: readonly Tier[],
+  copies: number,
+): Tier | null {
   let picked: Tier | null = null;
   for (const t of tiers) {
     if (t.copies <= copies && (picked === null || t.copies > picked.copies)) {
@@ -100,7 +107,12 @@ export function netPerCopy(price: number, ch: ChannelParams): number {
 }
 
 /** k 部頒布時の損益（円）。baseCost = 印刷総額 + 固定費。 */
-export function profitAt(k: number, price: number, ch: ChannelParams, baseCost: number): number {
+export function profitAt(
+  k: number,
+  price: number,
+  ch: ChannelParams,
+  baseCost: number,
+): number {
   return k * netPerCopy(price, ch) - baseCost;
 }
 
@@ -109,7 +121,11 @@ export function profitAt(k: number, price: number, ch: ChannelParams, baseCost: 
  * 1 冊あたり手取りが 0 以下なら何部頒布しても黒字にならない → null。
  * baseCost が 0 以下なら 0（最初から黒字）。
  */
-export function breakEvenCopies(price: number, ch: ChannelParams, baseCost: number): number | null {
+export function breakEvenCopies(
+  price: number,
+  ch: ChannelParams,
+  baseCost: number,
+): number | null {
   const net = netPerCopy(price, ch);
   if (net <= 0) return baseCost <= 0 ? 0 : null;
   if (baseCost <= 0) return 0;
@@ -117,7 +133,11 @@ export function breakEvenCopies(price: number, ch: ChannelParams, baseCost: numb
 }
 
 /** 損益分岐の厳密な交点（グラフのマーカー位置用・非整数）。黒字化しないなら null。 */
-export function breakEvenExact(price: number, ch: ChannelParams, baseCost: number): number | null {
+export function breakEvenExact(
+  price: number,
+  ch: ChannelParams,
+  baseCost: number,
+): number | null {
   const net = netPerCopy(price, ch);
   if (net <= 0) return baseCost <= 0 ? 0 : null;
   if (baseCost <= 0) return 0;
@@ -158,7 +178,10 @@ export function priceRange(
 ): { sellout: number; at70: number } | null {
   if (copies < 1 || ch.feeRate >= 1) return null;
   const priceFor = (k: number): number =>
-    Math.max(0, Math.ceil((baseCost / k + ch.perItemFee) / (1 - ch.feeRate) / 10) * 10);
+    Math.max(
+      0,
+      Math.ceil((baseCost / k + ch.perItemFee) / (1 - ch.feeRate) / 10) * 10,
+    );
   const k70 = Math.max(1, Math.floor(copies * 0.7));
   return { sellout: priceFor(copies), at70: priceFor(k70) };
 }
@@ -191,12 +214,24 @@ export function niceStep(range: number, target: number): number {
   return 10 * pow;
 }
 
+/**
+ * 損益表（「表で見る」）の刻み幅。基本 25 部刻み、部数が大きい場合は
+ * 行数が 40 行程度に収まるようキリ値（1/2/5×10^n）へ自動拡大する。
+ */
+export function tableStep(copies: number): number {
+  return Math.max(25, niceStep(copies, 40));
+}
+
 /** [min, max] を含む範囲のキリ値目盛（step の整数倍のみ・0 を必ず含み得る）。 */
 export function tickValues(min: number, max: number, target: number): number[] {
   if (!(max > min)) return [0];
   const step = niceStep(max - min, target);
   const ticks: number[] = [];
-  for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-9; v += step) {
+  for (
+    let v = Math.ceil(min / step) * step;
+    v <= max + step * 1e-9;
+    v += step
+  ) {
     // -0 を 0 に正規化
     ticks.push(v === 0 ? 0 : v);
   }
@@ -247,6 +282,8 @@ export interface TallyItem {
   /** 搬入数（未設定は null）。 */
   carryIn: number | null;
   count: number;
+  /** この頒布物の頒価（未設定 = シミュレータの頒価にフォールバック）。 */
+  price?: number | null;
 }
 
 export type TallyEvent =
@@ -266,7 +303,10 @@ export function applyTallyEvent(
 }
 
 /** イベントの逆操作を適用する（Undo 用）。 */
-function invertTallyEvent(items: readonly TallyItem[], ev: TallyEvent): TallyItem[] {
+function invertTallyEvent(
+  items: readonly TallyItem[],
+  ev: TallyEvent,
+): TallyItem[] {
   return items.map((it) => {
     if (it.id !== ev.itemId) return it;
     if (ev.type === "inc") return { ...it, count: Math.max(0, it.count - 1) };

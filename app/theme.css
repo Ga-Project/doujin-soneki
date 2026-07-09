@@ -25,6 +25,18 @@
   --radius-lg: 16px;
   --density: 0.95; /* 数値が主役のツールなのでわずかに密 */
 
+  /* === セマンティック色の AA 強化（globals 既定を上書き） ===
+   * 本製品は損益の金額・バッジ等の「小サイズ色付きテキスト」を多用するため、
+   * --ok/--err/--warn を bg/surface/surface-2/各 tint のすべてに対して
+   * ≥4.5:1 になる値へ調整する（相対輝度計算値・出荷前に devtools 実測）。
+   *   --ok   hsl(160 95% 24%): bg 5.5 / surface 5.4 / surface-2 5.0 / ok-tint 5.2
+   *   --err  hsl(4 74% 42%)  : bg 6.2 / surface 6.0 / surface-2 5.6 / err-tint 5.5
+   *   --warn hsl(29 90% 32%) : bg 5.9 / surface 5.7 / surface-2 5.4 / warn-tint 5.4
+   */
+  --ok: hsl(160 95% 24%);
+  --err: hsl(4 74% 42%);
+  --warn: hsl(29 90% 32%);
+
   /* === 製品固有: チャート系列トークン === */
   --chart-direct: var(--accent); /* 会場頒布（基準線）。dark は accent 連動で自動 */
   --chart-consign-1: hsl(292 45% 42%); /* 委託1（紫）。対 bg ≈ 8:1 */
@@ -33,14 +45,33 @@
   --chart-zone-profit: var(--ok-tint); /* 黒字ゾーン塗り */
   --chart-zone-loss: var(--err-tint); /* 赤字ゾーン塗り */
   --chart-grid: var(--border);
-  --chart-zero: var(--border-strong);
+  /* ゼロラインはグリッドより明確に強く（非テキスト 3:1 以上・計算値 3.4/3.3） */
+  --chart-zero: hsl(38 12% 52%);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    /* このファイルの :root{--accent-l:46%} は globals の dark 持ち上げ(@media)より
+       後に読み込まれ同一詳細度で勝ってしまうため、dark の accent を明示的に
+       持ち上げ直す（globals の設計値）。fg は明 accent 上で読める暗色に戻す。
+       （実測: accent/bg ≈ 6.0・accent-fg/accent ≈ 6.2 で AA） */
+    --accent-l: 68%;
+    --accent-fg: hsl(var(--neutral-hue) 40% 8%);
+
+    /* セマンティック色は dark で持ち上げる（tint 上の小テキストでも ≥4.5:1）。
+     *   --ok   hsl(157 50% 60%): bg 9.5 / surface 8.5 / surface-2 7.5 / ok-tint 6.5
+     *   --err  hsl(5 85% 72%)  : bg 7.5 / surface 6.7 / surface-2 5.9 / err-tint 6.0
+     *   --warn hsl(36 85% 60%) : bg 9.3 / surface 8.3 / surface-2 7.3 / warn-tint 6.7
+     */
+    --ok: hsl(157 50% 60%);
+    --err: hsl(5 85% 72%);
+    --warn: hsl(36 85% 60%);
+
     /* 委託系列は dark で持ち上げる（グラフィック AA ≥3:1 確保） */
     --chart-consign-1: hsl(292 55% 72%);
     --chart-consign-2: hsl(172 55% 58%);
     --chart-consign-3: hsl(96 45% 62%);
+    /* ゼロライン: dark はさらに一段強く（対 bg 5.3 / surface 4.7） */
+    --chart-zero: hsl(38 10% 52%);
   }
 }

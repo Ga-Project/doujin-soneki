@@ -1,8 +1,14 @@
 // 同人ソンエキ — ランディング一体型シミュレータ（ツールファースト）。
 // hero 直下に本体（#simulator）があり、着地後スクロール 1 回で計算を始められる。
+import type { Metadata } from "next";
 import Link from "next/link";
 import { SiteHeader, SiteFooter } from "./chrome";
 import { Simulator } from "./Simulator";
+import { SITE_URL } from "./config";
+
+export const metadata: Metadata = {
+  alternates: { canonical: SITE_URL },
+};
 
 /** hero 右カラムの装飾ミニ損益グラフ（実グラフと同じ視覚言語の静的 SVG・装飾）。 */
 function HeroChart() {
@@ -10,8 +16,20 @@ function HeroChart() {
     <div className="hero-visual" aria-hidden="true">
       <svg viewBox="0 0 360 240" fill="none">
         {/* ゾーン */}
-        <rect x="36" y="16" width="292" height="104" fill="var(--chart-zone-profit)" />
-        <rect x="36" y="120" width="292" height="88" fill="var(--chart-zone-loss)" />
+        <rect
+          x="36"
+          y="16"
+          width="292"
+          height="104"
+          fill="var(--chart-zone-profit)"
+        />
+        <rect
+          x="36"
+          y="120"
+          width="292"
+          height="88"
+          fill="var(--chart-zone-loss)"
+        />
         <text x="44" y="32" fontSize="10" fill="var(--text-dim)">
           黒字
         </text>
@@ -42,7 +60,14 @@ function HeroChart() {
           />
         ))}
         {/* ゼロライン */}
-        <line x1="36" x2="328" y1="120" y2="120" stroke="var(--chart-zero)" strokeWidth="1.5" />
+        <line
+          x1="36"
+          x2="328"
+          y1="120"
+          y2="120"
+          stroke="var(--chart-zero)"
+          strokeWidth="1.5"
+        />
         {/* 委託線（破線） */}
         <path
           d="M36 196 L328 88"
@@ -68,7 +93,14 @@ function HeroChart() {
           strokeWidth="1"
           strokeDasharray="4 4"
         />
-        <circle cx="178" cy="120" r="5" fill="var(--accent)" stroke="var(--bg)" strokeWidth="2" />
+        <circle
+          cx="178"
+          cy="120"
+          r="5"
+          fill="var(--accent)"
+          stroke="var(--bg)"
+          strokeWidth="2"
+        />
         <rect
           x="132"
           y="86"
@@ -91,7 +123,14 @@ function HeroChart() {
         </text>
         {/* 完売点 */}
         <circle cx="328" cy="40" r="3.5" fill="var(--ok)" />
-        <text x="322" y="30" fontSize="10" fontWeight="700" fill="var(--ok)" textAnchor="end">
+        <text
+          x="322"
+          y="30"
+          fontSize="10"
+          fontWeight="700"
+          fill="var(--ok)"
+          textAnchor="end"
+        >
           完売 +¥12,400
         </text>
       </svg>
@@ -108,7 +147,12 @@ export default function Home() {
 
       <SiteHeader />
 
-      <main id="main" tabIndex={-1} style={{ outline: "none" }} className="has-minibar">
+      <main
+        id="main"
+        tabIndex={-1}
+        style={{ outline: "none" }}
+        className="has-minibar"
+      >
         {/* 1. hero（コンパクト・2 カラム） */}
         <section className="hero hero-compact">
           <div className="container">
@@ -139,7 +183,11 @@ export default function Home() {
         </section>
 
         {/* 2. 損益分岐シミュレータ（主役・製図台） */}
-        <section id="simulator" className="sim-section" aria-labelledby="simulator-heading">
+        <section
+          id="simulator"
+          className="sim-section"
+          aria-labelledby="simulator-heading"
+        >
           <div className="container">
             <span className="eyebrow">損益分岐シミュレータ</span>
             <h2 id="simulator-heading" style={{ marginTop: "var(--sp-2)" }}>
@@ -155,7 +203,11 @@ export default function Home() {
         </section>
 
         {/* 3. タリー紹介 */}
-        <section id="tally-intro" className="section" aria-labelledby="tally-heading">
+        <section
+          id="tally-intro"
+          className="section"
+          aria-labelledby="tally-heading"
+        >
           <div className="container">
             <div className="tally-intro-grid">
               <div>

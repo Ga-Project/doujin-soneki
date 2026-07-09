@@ -44,9 +44,12 @@ type NavigatorWithWakeLock = Navigator & {
 
 /** カウント修正の入力（blur/Enter で確定し、Undo 可能な set イベントとして積む）。 */
 function CountFix({
+  id,
   item,
   onCommit,
 }: {
+  /** 対応する label の htmlFor と紐づける input id。 */
+  id: string;
   item: TallyItem;
   onCommit: (to: number) => void;
 }) {
@@ -64,6 +67,7 @@ function CountFix({
   };
   return (
     <input
+      id={id}
       type="number"
       inputMode="numeric"
       min="0"
@@ -77,7 +81,6 @@ function CountFix({
           e.currentTarget.blur();
         }
       }}
-      aria-label={`${item.name}のカウント修正`}
     />
   );
 }
@@ -106,6 +109,13 @@ export function TallyApp() {
   const [wakeSupported, setWakeSupported] = useState(false);
   const [keepAwake, setKeepAwake] = useState(false);
   const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
+  const chipsRef = useRef<HTMLDivElement | null>(null);
+
+  // アクティブな頒布物のチップが横スクロール外にあれば見える位置へ寄せる
+  useEffect(() => {
+    const chip = chipsRef.current?.querySelector('[aria-pressed="true"]');
+    chip?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeId]);
 
   // --- 復元・保存 -----------------------------------------------------------
 
@@ -117,7 +127,8 @@ export function TallyApp() {
       if (saved !== null && saved.items.length > 0) {
         setData({ items: saved.items, history: saved.history });
         setActiveId(
-          saved.activeId !== null && saved.items.some((i) => i.id === saved.activeId)
+          saved.activeId !== null &&
+            saved.items.some((i) => i.id === saved.activeId)
             ? saved.activeId
             : (saved.items[0]?.id ?? null),
         );
@@ -133,7 +144,13 @@ export function TallyApp() {
 
   useEffect(() => {
     if (!loaded || !storageOk) return;
-    saveTally({ v: 1, items: data.items, history: data.history, activeId, showMoney });
+    saveTally({
+      v: 1,
+      items: data.items,
+      history: data.history,
+      activeId,
+      showMoney,
+    });
   }, [data, activeId, showMoney, loaded, storageOk]);
 
   // --- オフライン監視 --------------------------------------------------------
@@ -208,6 +225,7 @@ export function TallyApp() {
       name: `頒布物${items.length + 1}`,
       carryIn: null,
       count: 0,
+      price: null,
     };
     setData((prev) => ({ ...prev, items: [...prev.items, item] }));
     setActiveId(item.id);
@@ -224,16 +242,26 @@ export function TallyApp() {
   const deleteItem = (id: string): void => {
     const target = items.find((i) => i.id === id);
     if (target === undefined) return;
-    if (!window.confirm(`「${target.name}」を削除しますか？カウントも消えます。`)) return;
+    if (
+      !window.confirm(`「${target.name}」を削除しますか？カウントも消えます。`)
+    )
+      return;
     const next = items.filter((i) => i.id !== id);
-    setData((prev) => ({ ...prev, items: prev.items.filter((i) => i.id !== id) }));
+    setData((prev) => ({
+      ...prev,
+      items: prev.items.filter((i) => i.id !== id),
+    }));
     if (activeId === id) {
       setActiveId(next[0]?.id ?? null);
     }
   };
 
   const resetAll = (): void => {
-    if (!window.confirm("すべての頒布物のカウントを 0 に戻しますか？この操作は取り消せません。")) {
+    if (
+      !window.confirm(
+        "すべての頒布物のカウントを 0 に戻しますか？この操作は取り消せません。",
+      )
+    ) {
       return;
     }
     setData((prev) => ({
@@ -254,8 +282,23 @@ export function TallyApp() {
   // --- 表示 -----------------------------------------------------------------
 
   const remaining = active === null ? null : remainingCopies(active);
-  const soldOut = active !== null && active.carryIn !== null && active.carryIn > 0 && remaining === 0;
+  const soldOut =
+    active !== null &&
+    active.carryIn !== null &&
+    active.carryIn > 0 &&
+    remaining === 0;
   const totalCount = items.reduce((acc, i) => acc + i.count, 0);
+
+  /** 頒布物の実効頒価（頒布物ごとの設定 → シミュレータの頒価の順でフォールバック）。 */
+  const unitPriceOf = (item: TallyItem): number | null =>
+    item.price ?? simMoney?.price ?? null;
+  const activePrice = active === null ? null : unitPriceOf(active);
+  // 全頒布物の頒価が確定しているときだけ全体の手取り・損益を出す（誤解を招く合計を出さない）
+  const allPriced =
+    items.length > 0 && items.every((i) => unitPriceOf(i) !== null);
+  const totalRevenue = allPriced
+    ? items.reduce((acc, i) => acc + i.count * (unitPriceOf(i) ?? 0), 0)
+    : null;
 
   return (
     <div className="tally-page">
@@ -278,14 +321,28 @@ export function TallyApp() {
       <main
         id="tally-main"
         tabIndex={-1}
-        style={{ outline: "none", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
+        style={{
+          outline: "none",
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+        }}
       >
         <h1 className="sr-only">即売会頒布カウンター</h1>
 
         {restored && !restoreDismissed && (
-          <div className="alert restore-bar" role="status" style={{ margin: "var(--sp-3) var(--sp-4) 0" }}>
+          <div
+            className="alert restore-bar"
+            role="status"
+            style={{ margin: "var(--sp-3) var(--sp-4) 0" }}
+          >
             <span>前回の記録を復元しました</span>
-            <button type="button" className="btn btn-secondary" onClick={restartAll}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={restartAll}
+            >
               最初からやり直す
             </button>
             <button
@@ -299,14 +356,23 @@ export function TallyApp() {
           </div>
         )}
         {loaded && !storageOk && (
-          <div className="alert alert-warn" role="status" style={{ margin: "var(--sp-3) var(--sp-4) 0" }}>
+          <div
+            className="alert alert-warn"
+            role="status"
+            style={{ margin: "var(--sp-3) var(--sp-4) 0" }}
+          >
             この環境ではデータを保存できません。ページを閉じると記録が消えます
           </div>
         )}
 
         {/* 頒布物チップ列（+1 ゾーンから最も遠い上端） */}
         {items.length > 0 && (
-          <div className="tally-chips" role="group" aria-label="頒布物の切替">
+          <div
+            className="tally-chips"
+            role="group"
+            aria-label="頒布物の切替"
+            ref={chipsRef}
+          >
             {items.map((i) => (
               <button
                 key={i.id}
@@ -330,7 +396,11 @@ export function TallyApp() {
                 ⊕
               </span>
               <h3>頒布物を登録して、当日のカウントを始めましょう</h3>
-              <button type="button" className="btn btn-primary" onClick={addItem}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={addItem}
+              >
                 頒布物を追加
               </button>
             </div>
@@ -341,16 +411,46 @@ export function TallyApp() {
               <h2>頒布物を編集</h2>
               {items.map((i) => (
                 <div key={i.id} className="tally-edit-row">
-                  <div className="field">
+                  <div className="field field-name">
                     <label htmlFor={`name-${i.id}`}>名前</label>
                     <input
                       id={`name-${i.id}`}
                       type="text"
                       value={i.name}
-                      onChange={(e) => updateItem(i.id, { name: e.target.value })}
+                      onChange={(e) =>
+                        updateItem(i.id, { name: e.target.value })
+                      }
                     />
                   </div>
-                  <div className="field">
+                  <div className="field field-num">
+                    <label htmlFor={`price-${i.id}`}>頒価（円）</label>
+                    <input
+                      id={`price-${i.id}`}
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      className="tabular"
+                      placeholder={
+                        simMoney === null ? "未設定" : String(simMoney.price)
+                      }
+                      value={
+                        i.price === null || i.price === undefined
+                          ? ""
+                          : String(i.price)
+                      }
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const n = Number(raw);
+                        updateItem(i.id, {
+                          price:
+                            raw === "" || !Number.isFinite(n) || n < 0
+                              ? null
+                              : n,
+                        });
+                      }}
+                    />
+                  </div>
+                  <div className="field field-num">
                     <label htmlFor={`carry-${i.id}`}>搬入数</label>
                     <input
                       id={`carry-${i.id}`}
@@ -365,17 +465,25 @@ export function TallyApp() {
                         const n = Number(raw);
                         updateItem(i.id, {
                           carryIn:
-                            raw === "" || !Number.isInteger(n) || n < 0 ? null : n,
+                            raw === "" || !Number.isInteger(n) || n < 0
+                              ? null
+                              : n,
                         });
                       }}
                     />
                   </div>
-                  <div className="field">
+                  <div className="field field-num">
                     <label htmlFor={`fix-${i.id}`}>カウント修正</label>
                     <CountFix
+                      id={`fix-${i.id}`}
                       item={i}
                       onCommit={(to) =>
-                        pushEvent({ type: "set", itemId: i.id, from: i.count, to })
+                        pushEvent({
+                          type: "set",
+                          itemId: i.id,
+                          from: i.count,
+                          to,
+                        })
                       }
                     />
                   </div>
@@ -389,11 +497,22 @@ export function TallyApp() {
                   </button>
                 </div>
               ))}
+              <p className="field-hint">
+                頒価は空欄のままなら計算機（シミュレータ）の頒価を使います
+              </p>
               <div className="tally-edit-actions">
-                <button type="button" className="btn btn-secondary" onClick={addItem}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={addItem}
+                >
                   ＋ 頒布物を追加
                 </button>
-                <button type="button" className="link-danger" onClick={resetAll}>
+                <button
+                  type="button"
+                  className="link-danger"
+                  onClick={resetAll}
+                >
                   全リセット（カウントを 0 に）
                 </button>
               </div>
@@ -423,7 +542,11 @@ export function TallyApp() {
                 )}
               </div>
               <div>
-                <button type="button" className="btn btn-primary" onClick={() => setEditMode(false)}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setEditMode(false)}
+                >
                   編集を終える
                 </button>
               </div>
@@ -458,7 +581,11 @@ export function TallyApp() {
                     {active.count}
                   </div>
                   {popKey > 0 && (
-                    <span key={`t${popKey}`} className="tap-toast tabular" aria-hidden="true">
+                    <span
+                      key={`t${popKey}`}
+                      className="tap-toast tabular"
+                      aria-hidden="true"
+                    >
                       ＋1
                     </span>
                   )}
@@ -466,18 +593,39 @@ export function TallyApp() {
                 <span className="sr-only" aria-live="polite" aria-atomic="true">
                   {active.name} {active.count}部
                 </span>
-                {soldOut && <p className="tally-money">完売おめでとうございます！</p>}
+                {soldOut && (
+                  <p className="tally-money">完売おめでとうございます！</p>
+                )}
                 {showMoney && (
                   <p className="tally-money tabular">
-                    {simMoney !== null ? (
+                    {activePrice !== null ? (
                       <>
-                        実売 {totalCount}部 ・ 手取り {formatYen(totalCount * simMoney.price)} ・
-                        現在損益{" "}
-                        {formatSignedYen(totalCount * simMoney.price - simMoney.baseCost)}
-                        （計算機の入力にもとづく概算）
+                        小計 {formatYen(active.count * activePrice)}（
+                        {active.count}部 × ¥
+                        {activePrice.toLocaleString("ja-JP")}）
                       </>
                     ) : (
-                      "計算機で頒価と印刷費を入力すると、ここに損益が出ます"
+                      "この頒布物の頒価が未設定です。編集画面か計算機で頒価を入れると小計が出ます"
+                    )}
+                    {totalRevenue !== null && (
+                      <>
+                        <br />
+                        全体 実売 {totalCount}部 ・ 手取り{" "}
+                        {formatYen(totalRevenue)}
+                        {simMoney !== null && (
+                          <>
+                            {" ・ "}現在損益{" "}
+                            {formatSignedYen(totalRevenue - simMoney.baseCost)}
+                            （計算機の費用にもとづく概算）
+                          </>
+                        )}
+                      </>
+                    )}
+                    {totalRevenue === null && items.length > 1 && (
+                      <>
+                        <br />
+                        頒価が未設定の頒布物があるため、全体の手取り・損益は表示していません
+                      </>
                     )}
                   </p>
                 )}
