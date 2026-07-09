@@ -6,11 +6,14 @@ import {
   parseNum,
   parseCopies,
   parseFeePercent,
+  parseOptionalYen,
   MAX_COPIES,
   tableStep,
   normalizeTier,
   pickTierForCopies,
   parseChannelParams,
+  activeChannelIds,
+  resolveMainChannelId,
   netPerCopy,
   profitAt,
   breakEvenCopies,
@@ -123,6 +126,80 @@ test("parseChannelParams: 定額手数料の不正入力はチャネル無効（
     ok: true,
     params: { feeRate: 0, perItemFee: 0 },
   });
+});
+
+test("parseOptionalYen: 空欄は 0・不正な非空値は null（黙って 0 にしない）", () => {
+  assert.equal(parseOptionalYen(""), 0);
+  assert.equal(parseOptionalYen("  "), 0);
+  assert.equal(parseOptionalYen("6000"), 6000);
+  assert.equal(parseOptionalYen("0"), 0);
+  // 負値・数値でない入力（固定費に貼り付けた -500 や e など）は null → 計算をブロック
+  assert.equal(parseOptionalYen("-500"), null);
+  assert.equal(parseOptionalYen("e"), null);
+  assert.equal(parseOptionalYen("abc"), null);
+});
+
+test("activeChannelIds / resolveMainChannelId: 主チャネルは計算対象と常に一致する", () => {
+  const direct = {
+    id: "direct",
+    kind: "direct",
+    fee: "0",
+    perItem: "0",
+    visible: true,
+  };
+  const c1 = {
+    id: "c1",
+    kind: "consign",
+    fee: "30",
+    perItem: "0",
+    visible: true,
+  };
+  const c2 = {
+    id: "c2",
+    kind: "consign",
+    fee: "",
+    perItem: "0",
+    visible: true,
+  }; // 手数料未入力
+  const c3 = {
+    id: "c3",
+    kind: "consign",
+    fee: "10",
+    perItem: "0",
+    visible: false,
+  }; // 表示OFF
+  const c4 = {
+    id: "c4",
+    kind: "consign",
+    fee: "20",
+    perItem: "0",
+    visible: true,
+  }; // 4行目
+
+  // 対象 = 表示ON・入力有効。手数料未入力(c2)・表示OFF(c3)は対象外
+  assert.deepEqual(activeChannelIds([direct, c1, c2, c3], 3), ["direct", "c1"]);
+  // 委託は先頭から3行まで（c4 は4行目なので有効入力でも対象外）
+  assert.deepEqual(activeChannelIds([direct, c1, c2, c3, c4], 3), [
+    "direct",
+    "c1",
+  ]);
+  assert.deepEqual(activeChannelIds([direct, c1, c4], 3), [
+    "direct",
+    "c1",
+    "c4",
+  ]);
+
+  // 選択が対象内ならそのまま
+  assert.equal(resolveMainChannelId([direct, c1], 3, "c1"), "c1");
+  // 表示OFFで対象から外れたら先頭の有効チャネルへ付け替え
+  assert.equal(resolveMainChannelId([direct, c3], 3, "c3"), "direct");
+  // 手数料未入力の委託を選んでいた場合も付け替え
+  assert.equal(resolveMainChannelId([direct, c2], 3, "c2"), "direct");
+  // 有効チャネルが1つも無ければ現状維持（系列は描かれない）
+  assert.equal(
+    resolveMainChannelId([{ ...direct, visible: false }, c2], 3, "c2"),
+    "c2",
+  );
 });
 
 test("netPerCopy: 手数料率と定額控除を頒価から差し引く", () => {

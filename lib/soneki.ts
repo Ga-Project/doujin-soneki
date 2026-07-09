@@ -37,6 +37,16 @@ export function parseFeePercent(raw: string): number | null {
   return n;
 }
 
+/**
+ * 任意入力の金額（円）。空欄は 0 扱い、負値・数値でない入力は null。
+ * 固定費・定額手数料など「空でもよいが、入れるなら正しい値」のフィールドに使う。
+ * 不正入力を黙って 0 に置き換えない（見えている入力と計算結果を食い違わせない）。
+ */
+export function parseOptionalYen(raw: string): number | null {
+  if (raw.trim() === "") return 0;
+  return parseNum(raw);
+}
+
 // ---------------------------------------------------------------------------
 // 印刷費の階段単価テーブル
 // ---------------------------------------------------------------------------
@@ -128,11 +138,58 @@ export function parseChannelParams(
       reason: fee.trim() === "" ? "fee-empty" : "fee-invalid",
     };
   }
-  const per = perItem.trim() === "" ? 0 : parseNum(perItem);
+  const per = parseOptionalYen(perItem);
   if (per === null) {
     return { ok: false, reason: "per-item-invalid" };
   }
   return { ok: true, params: { feeRate: feePct / 100, perItemFee: per } };
+}
+
+/** チャネル行の構造的最小型（UI 層の保存形と互換）。 */
+export interface ChannelLike {
+  id: string;
+  kind: "direct" | "consign";
+  fee: string;
+  perItem: string;
+  visible: boolean;
+}
+
+/**
+ * 計算/グラフの対象になるチャネル id を行順で返す。
+ * 対象 = 表示 ON かつ入力が有効なチャネル。委託は先頭から maxConsign 行まで
+ * （系列色の上限。それ以降の行は編集はできるが計算対象外）。
+ */
+export function activeChannelIds(
+  channels: readonly ChannelLike[],
+  maxConsign: number,
+): string[] {
+  const ids: string[] = [];
+  let consign = 0;
+  for (const ch of channels) {
+    if (ch.kind === "consign") {
+      consign += 1;
+      if (consign > maxConsign) continue;
+    }
+    if (!ch.visible) continue;
+    if (!parseChannelParams(ch.kind, ch.fee, ch.perItem).ok) continue;
+    ids.push(ch.id);
+  }
+  return ids;
+}
+
+/**
+ * 主チャネルの選択を計算対象と常に一致させる。現在の選択が計算対象から外れたら
+ * 先頭の有効チャネルへ付け替える。有効チャネルが 1 つも無ければ現状維持
+ * （系列が描かれないため表示との食い違いは生じない）。
+ */
+export function resolveMainChannelId(
+  channels: readonly ChannelLike[],
+  maxConsign: number,
+  currentId: string,
+): string {
+  const active = activeChannelIds(channels, maxConsign);
+  if (active.includes(currentId)) return currentId;
+  return active[0] ?? currentId;
 }
 
 /** 1 冊頒布あたりの手取り（円）。マイナスにもなり得る（定額控除 > 頒価×(1−率)）。 */

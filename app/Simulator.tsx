@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  activeChannelIds,
   allocationProfit,
   breakEvenCopies,
   breakEvenExact,
@@ -16,9 +17,11 @@ import {
   parseChannelParams,
   parseFeePercent,
   parseNum,
+  parseOptionalYen,
   perCopyAtSellout,
   priceRange,
   profitAt,
+  resolveMainChannelId,
   selloutProfit,
   tableStep,
   type ChannelParams,
@@ -101,6 +104,16 @@ function newId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${idSeq}`;
 }
 
+/**
+ * 主チャネルの選択を計算対象と常に一致させる（表示 OFF・手数料未入力・
+ * 色枠超過で計算対象から外れたら、有効な系列へ自動で付け替える）。
+ * すべての状態変更（編集・復元・系列切替）で通す。
+ */
+function normalizeMain(s: SimSaved): SimSaved {
+  const next = resolveMainChannelId(s.channels, MAX_CONSIGN, s.mainChannelId);
+  return next === s.mainChannelId ? s : { ...s, mainChannelId: next };
+}
+
 const CONSIGN_COLORS: readonly {
   colorClass: SeriesColor;
   colorVar: string;
@@ -143,7 +156,7 @@ export function Simulator() {
     if (ok) {
       const saved = loadSim();
       if (saved !== null) {
-        setState(saved);
+        setState(normalizeMain(saved));
         setRestored(true);
       }
     }
@@ -156,9 +169,9 @@ export function Simulator() {
     saveSim(state);
   }, [state, loaded, storageOk]);
 
-  /** ユーザー編集（サンプルバッジを外す）。 */
+  /** ユーザー編集（サンプルバッジを外す + 主チャネル整合）。 */
   const edit = (fn: (s: SimSaved) => SimSaved): void => {
-    setState((s) => ({ ...fn(s), isSample: false }));
+    setState((s) => normalizeMain({ ...fn(s), isSample: false }));
   };
 
   // --- 導出値 -------------------------------------------------------------
@@ -169,13 +182,20 @@ export function Simulator() {
       state.tiers.map((t) => [t.id, normalizeTier(t)]),
     );
     const selectedTier = tiersNorm.get(state.selectedTierId) ?? null;
-    const fixedSum =
-      (parseNum(state.fixedEvent) ?? 0) + (parseNum(state.fixedOther) ?? 0);
+    // 固定費も定額手数料と同じ検証経路（空欄=0・不正な非空値は計算をブロック）
+    const fixedEventVal = parseOptionalYen(state.fixedEvent);
+    const fixedOtherVal = parseOptionalYen(state.fixedOther);
+    const fixedInvalid = fixedEventVal === null || fixedOtherVal === null;
+    const fixedSum = (fixedEventVal ?? 0) + (fixedOtherVal ?? 0);
     const baseCost =
       selectedTier === null ? 0 : selectedTier.totalCost + fixedSum;
-    const ready = price !== null && price > 0 && selectedTier !== null;
+    const ready =
+      price !== null && price > 0 && selectedTier !== null && !fixedInvalid;
 
-    // チャネル → 系列
+    // チャネル → 系列。計算対象（表示 ON・入力有効・委託は色枠 3 件まで）は
+    // lib の activeChannelIds と同一判定になるよう構成する
+    const activeIds = new Set(activeChannelIds(state.channels, MAX_CONSIGN));
+    const overLimitIds = new Set<string>();
     let consignIndex = 0;
     const seriesAll: SeriesInfo[] = [];
     const feeErrors: { id: string; msg: string }[] = [];
@@ -188,7 +208,11 @@ export function Simulator() {
       if (ch.kind === "consign") {
         const c = CONSIGN_COLORS[consignIndex];
         consignIndex += 1;
-        if (c === undefined) continue;
+        if (c === undefined) {
+          // 4 行目以降の委託（旧データ等）: 編集はできるが計算対象外（カードに明示）
+          overLimitIds.add(ch.id);
+          continue;
+        }
         color = c;
       }
       // 手数料率・定額手数料を同じ検証経路で解決する。不正入力は黙って 0 に
@@ -277,6 +301,18 @@ export function Simulator() {
         msg: "印刷費の単価表で「この部数で刷る」行を完成させて選んでください",
       });
     }
+    if (fixedEventVal === null) {
+      missing.push({
+        id: "fixed-event",
+        msg: "イベント参加費は 0 以上の数値で入れてください",
+      });
+    }
+    if (fixedOtherVal === null) {
+      missing.push({
+        id: "fixed-other",
+        msg: "その他の固定費は 0 以上の数値で入れてください",
+      });
+    }
 
     // 配分プラン（予定部数）
     const plans: { name: string; copies: number; ch: ChannelParams }[] = [];
@@ -303,10 +339,14 @@ export function Simulator() {
       tiersNorm,
       selectedTier,
       fixedSum,
+      fixedEventInvalid: fixedEventVal === null,
+      fixedOtherInvalid: fixedOtherVal === null,
       baseCost,
       ready,
       seriesAll,
       mainSeries,
+      activeIds,
+      overLimitIds,
       feeErrors,
       rowErrors,
       missing,
@@ -321,10 +361,14 @@ export function Simulator() {
     price,
     tiersNorm,
     selectedTier,
+    fixedEventInvalid,
+    fixedOtherInvalid,
     baseCost,
     ready,
     seriesAll,
     mainSeries,
+    activeIds,
+    overLimitIds,
     feeErrors,
     rowErrors,
     missing,
@@ -421,7 +465,7 @@ export function Simulator() {
   };
 
   const selectMain = (id: string): void => {
-    setState((s) => ({ ...s, mainChannelId: id }));
+    setState((s) => normalizeMain({ ...s, mainChannelId: id }));
   };
 
   const applySample = (): void => {
@@ -483,7 +527,9 @@ export function Simulator() {
       : "損益グラフ。入力が完了すると損益カーブが表示されます";
 
   const errorList = [...missing, ...rowErrors, ...feeErrors];
-  const consignCount = seriesAll.filter((s) => s.kind === "consign").length;
+  // 上限判定は「委託チャネルの行数」基準（表示 OFF・手数料未入力の行も数える。
+  // 系列色が 3 色 = 計算対象の枠が 3 件のため、行自体を 3 件までに制限する）
+  const consignRows = state.channels.filter((c) => c.kind === "consign").length;
 
   // ---------------------------------------------------------------------------
 
@@ -881,11 +927,20 @@ export function Simulator() {
                           type="radio"
                           name="main-channel"
                           checked={state.mainChannelId === ch.id}
+                          disabled={!activeIds.has(ch.id)}
                           onChange={() => selectMain(ch.id)}
                         />
                         主チャネル
                       </label>
                     </div>
+                    {overLimitIds.has(ch.id) && (
+                      <p className="source-note">
+                        <span className="badge badge-warn">対象外</span>{" "}
+                        4件目以降の委託はグラフ・計算の対象外です（委託は
+                        {MAX_CONSIGN}
+                        件まで）。不要な委託先を削除すると反映されます
+                      </p>
+                    )}
                     {ch.note !== undefined && (
                       <p className="source-note">
                         {ch.note}
@@ -913,7 +968,7 @@ export function Simulator() {
                   key={p.id}
                   type="button"
                   className="btn btn-secondary"
-                  disabled={consignCount >= MAX_CONSIGN}
+                  disabled={consignRows >= MAX_CONSIGN}
                   onClick={() =>
                     addChannel({
                       name: p.name,
@@ -932,7 +987,7 @@ export function Simulator() {
               <button
                 type="button"
                 className="btn btn-ghost"
-                disabled={consignCount >= MAX_CONSIGN}
+                disabled={consignRows >= MAX_CONSIGN}
                 onClick={() =>
                   addChannel({ name: "委託先", fee: "", perItem: "0" })
                 }
@@ -940,13 +995,22 @@ export function Simulator() {
                 ＋ その他の委託先
               </button>
             </div>
+            {consignRows >= MAX_CONSIGN && (
+              <p className="field-hint">
+                委託先は{MAX_CONSIGN}
+                件まで追加できます（グラフの系列色の上限）。入れ替えるには不要な委託先を削除してください
+              </p>
+            )}
             <p className="source-note">
               プリセットの料率は各委託先の公開情報にもとづく目安で、編集できます。料率は改定されることがあります。最新の料率は各委託先の公式の案内でご確認ください
             </p>
           </section>
 
-          {/* 詳細オプション（固定費） */}
-          <details className="panel-details">
+          {/* 詳細オプション（固定費）。不正入力がある間は閉じて見えなくならないよう開いたままにする */}
+          <details
+            className="panel-details"
+            open={fixedEventInvalid || fixedOtherInvalid || undefined}
+          >
             <summary>詳細オプション（イベント参加費などの固定費）</summary>
             <div className="details-body">
               <div className="field">
@@ -961,10 +1025,16 @@ export function Simulator() {
                     onChange={(e) =>
                       edit((s) => ({ ...s, fixedEvent: e.target.value }))
                     }
+                    aria-invalid={fixedEventInvalid}
                     className="tabular"
                   />
                   <span className="suffix">円</span>
                 </div>
+                {fixedEventInvalid && (
+                  <p className="field-error">
+                    イベント参加費は 0 以上の数値で入れてください
+                  </p>
+                )}
               </div>
               <div className="field">
                 <label htmlFor="fixed-other">
@@ -980,10 +1050,16 @@ export function Simulator() {
                     onChange={(e) =>
                       edit((s) => ({ ...s, fixedOther: e.target.value }))
                     }
+                    aria-invalid={fixedOtherInvalid}
                     className="tabular"
                   />
                   <span className="suffix">円</span>
                 </div>
+                {fixedOtherInvalid && (
+                  <p className="field-error">
+                    その他の固定費は 0 以上の数値で入れてください
+                  </p>
+                )}
               </div>
               <p className="field-hint">
                 既定は 0 円。オプション費用・送料などもここに加算できます
