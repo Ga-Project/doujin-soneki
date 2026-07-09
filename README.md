@@ -1,7 +1,11 @@
-# doujin-soneki
+# doujin-soneki — 同人ソンエキ
 
-Next.js 14 (App Router) web プロダクト雛形。
-static export（`out/` に静的書き出し）でサーバランタイム不要にし、ホスティングに配信する。
+同人誌の損益分岐シミュレータ（`/`）と即売会当日の頒布カウンター（`/tally`）。
+印刷所の階段単価・委託手数料・固定費から、損益分岐部数・完売時損益・頒価の目安を
+SVG 損益グラフで表示する。登録不要・計算はすべてブラウザ内で完結し、入力は
+localStorage にのみ保存される（サーバー送信なし）。
+
+Next.js 14 (App Router)。static export（`out/` に静的書き出し）でサーバランタイム不要にし、ホスティングに配信する。
 
 ## セットアップ & 開発
 
@@ -42,13 +46,23 @@ GitHub Pages（GitHub Actions で自動デプロイ）。同梱の `.github/work
 ```
 doujin-soneki/
 ├─ app/
-│  ├─ page.tsx              # 既定ランディング（ヒーロー/特徴/フッター・各製品が中身を差し替える雛形）
-│  ├─ not-found.tsx         # 404 ページ（デザイン基盤適用・日本語・static export で out/404.html を生成）
-│  ├─ layout.tsx            # globals.css を import・SEO/OGP メタ・公開アナリティクスのコメントスロット
+│  ├─ page.tsx              # ランディング一体型シミュレータ（hero 直下に本体）
+│  ├─ Simulator.tsx         # 損益分岐シミュレータ（クライアント・localStorage 自動保存）
+│  ├─ ProfitChart.tsx       # SVG 損益グラフ（黒字/赤字ゾーン・分岐マーカー・スナップ読み取り）
+│  ├─ tally/                # 頒布タリー（+1 / Undo / 搬入数 / オフライン動作）
+│  ├─ terms/ ・ privacy/    # 利用規約・プライバシーポリシー
+│  ├─ chrome.tsx            # 共通ヘッダー/フッター/ブランドマーク
+│  ├─ storage.ts            # localStorage スキーマ（バージョン付き）と型安全ロード
+│  ├─ config.ts             # 公開値（サイトURL・解析コード・委託先プリセット）
+│  ├─ not-found.tsx         # 404 ページ（static export で out/404.html を生成）
+│  ├─ layout.tsx            # globals.css / theme.css / product.css を import・SEO/OGP メタ
+│  ├─ product.css           # 製品固有レイアウト（製図台 2 カラム / thumb-zone タリー）
 │  └─ globals.css           # 共通デザイン基盤（CSS変数トークン+ベーススタイル・light/dark・a11y）
+├─ lib/
+│  └─ soneki.ts             # 中核計算ロジック（純関数・損益/分岐/目盛/タリー）
 ├─ public/                  # 静的アセット置き場
 ├─ test/
-│  └─ smoke.test.mjs        # node:test の smoke テスト
+│  └─ soneki.test.mjs       # node:test の単体テスト（計算ロジック）
 ├─ next.config.mjs          # output: "export"（static export 設定）
 ├─ tsconfig.json            # ../../tsconfig.base.json を extends
 ├─ scripts/public-gate.sh   # 公開前ゲート（CI と手元で共通に走る検査）
