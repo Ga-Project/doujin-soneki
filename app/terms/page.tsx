@@ -57,6 +57,7 @@ export default function TermsPage() {
           </p>
 
           <div className="okuzuke">
+            <p>制定日　2026年7月14日</p>
             <p>
               奥付　同人ソンエキ ／ <Link href="/">帳面に戻る →</Link>
             </p>

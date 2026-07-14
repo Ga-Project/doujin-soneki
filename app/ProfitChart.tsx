@@ -19,6 +19,7 @@ import {
   formatAxis,
   formatAxisTick,
   formatChobo,
+  niceStep,
   tickValues,
 } from "@/lib/soneki";
 
@@ -57,6 +58,11 @@ interface Props {
   breakEvenMain: number | null;
   breakEvenExactMain: number | null;
   legend: LegendRow[];
+  /**
+   * 検算中（直前有効値のスナップショット表示）。凡例の操作を留め置き、
+   * 凍結された線図と操作結果が食い違う過渡状態を作らない。
+   */
+  frozen?: boolean;
   onSelectMain: (id: string) => void;
   onToggleVisible: (id: string, visible: boolean) => void;
   ariaLabel: string;
@@ -73,6 +79,13 @@ const PAD_L = 64;
 const PLOT_W = W - PAD_L - PAD_R;
 const PLOT_H = H - PAD_T - PAD_B;
 
+// SVG 内テキストの文字サイズ（viewBox 単位）。375px 実機では約 0.86 倍で描画される
+// ため、ブリーフ§4 の 13px 級を満たすよう 14〜15 を基準にする（11〜12 は 9〜10px に
+// 潰れて不可）。Y 目盛のみ左余白 64px に「-80,000」級を収めるため 14。
+const JI_MEMORI = 14; // Y 目盛数字
+const JI_SVG = 15; // 単位注記・ゾーン名・X 目盛・「部」
+const JI_FUDA = 14; // 分岐・完売の札
+
 /** 読取のスナップ刻み（部）。 */
 const YOMI_KIZAMI = 25;
 
@@ -85,6 +98,7 @@ export function ProfitChart({
   breakEvenMain,
   breakEvenExactMain,
   legend,
+  frozen = false,
   onSelectMain,
   onToggleVisible,
   ariaLabel,
@@ -122,8 +136,12 @@ export function ProfitChart({
   // 軸: Y は nice-step、単位は最大絶対値で円/万円を切替（formatAxis）
   const axis = formatAxis(Math.max(Math.abs(yTop), Math.abs(yBot)));
   const yTicks = tickValues(yBot, yTop, 5);
-  // X 主目盛: 標準は 50 部ごと、部数が多いときはキリ値に自動拡大
-  const xStep = Math.max(50, ...tickValues(0, xMax, 8).slice(1, 2));
+  // X 主目盛: 標準は 50 部ごと、部数が多いときはキリ値に自動拡大。
+  // 50 部未満の小部数では「0」しか出なくなるため、キリ値の細目盛に切り替える
+  const xStep =
+    xMax < 50
+      ? Math.max(1, niceStep(xMax, 5))
+      : Math.max(50, ...tickValues(0, xMax, 8).slice(1, 2));
   const xTicks: number[] = [];
   for (let k = 0; k <= xMax; k += xStep) xTicks.push(k);
 
@@ -215,7 +233,7 @@ export function ProfitChart({
                 type="radio"
                 name="hanrei-main"
                 checked={row.isMain}
-                disabled={!row.active}
+                disabled={frozen || !row.active}
                 onChange={() => onSelectMain(row.id)}
                 aria-label={`${row.name}を主チャネルにする`}
               />
@@ -225,6 +243,7 @@ export function ProfitChart({
               <input
                 type="checkbox"
                 checked={row.visible}
+                disabled={frozen}
                 onChange={(e) => onToggleVisible(row.id, e.target.checked)}
                 aria-label={`${row.name}を線図に表示`}
               />
@@ -302,8 +321,8 @@ export function ProfitChart({
           {y0 - PAD_T > 24 && (
             <text
               x={PAD_L + 8}
-              y={PAD_T + 16}
-              fontSize="11"
+              y={PAD_T + 18}
+              fontSize={JI_SVG}
               fill="var(--sumi-2)"
             >
               黒字
@@ -313,7 +332,7 @@ export function ProfitChart({
             <text
               x={PAD_L + 8}
               y={H - PAD_B - 8}
-              fontSize="11"
+              fontSize={JI_SVG}
               fill="var(--sumi-2)"
             >
               赤字
@@ -321,7 +340,7 @@ export function ProfitChart({
           )}
 
           {/* 単位注記（統計年鑑様式） */}
-          <text x={8} y={12} fontSize="11" fill="var(--sumi-2)">
+          <text x={8} y={13} fontSize={JI_SVG} fill="var(--sumi-2)">
             （単位：{axis.unit}）
           </text>
 
@@ -339,8 +358,8 @@ export function ProfitChart({
               />
               <text
                 x={PAD_L - 6}
-                y={y(v) + 4}
-                fontSize="11"
+                y={y(v) + 5}
+                fontSize={JI_MEMORI}
                 fill="var(--sumi-2)"
                 textAnchor="end"
                 className="suji"
@@ -364,8 +383,8 @@ export function ProfitChart({
               />
               <text
                 x={x(k)}
-                y={H - PAD_B + 16}
-                fontSize="11"
+                y={H - PAD_B + 17}
+                fontSize={JI_SVG}
                 fill="var(--sumi-2)"
                 textAnchor="middle"
                 className="suji"
@@ -376,8 +395,8 @@ export function ProfitChart({
           ))}
           <text
             x={W - PAD_R}
-            y={H - PAD_B + 30}
-            fontSize="11"
+            y={H - PAD_B + 34}
+            fontSize={JI_SVG}
             fill="var(--sumi-2)"
             textAnchor="end"
           >
@@ -436,18 +455,20 @@ export function ProfitChart({
               {breakEvenMain !== null && (
                 <g>
                   <rect
-                    x={Math.min(W - PAD_R - 96, Math.max(PAD_L, bex - 48))}
-                    y={H - PAD_B - 26}
-                    width="96"
-                    height="20"
+                    x={Math.min(W - PAD_R - 104, Math.max(PAD_L, bex - 52))}
+                    y={H - PAD_B - 28}
+                    width="104"
+                    height="22"
                     fill="var(--kami-2)"
                     stroke="var(--shu)"
                     strokeWidth="1"
                   />
                   <text
-                    x={Math.min(W - PAD_R - 96, Math.max(PAD_L, bex - 48)) + 48}
+                    x={
+                      Math.min(W - PAD_R - 104, Math.max(PAD_L, bex - 52)) + 52
+                    }
                     y={H - PAD_B - 12}
-                    fontSize="12"
+                    fontSize={JI_FUDA}
                     fill="var(--shu)"
                     textAnchor="middle"
                     className="suji"
@@ -471,18 +492,18 @@ export function ProfitChart({
                 transform={`rotate(45 ${x(xMax)} ${y(mainEndV)})`}
               />
               <rect
-                x={W - PAD_R - 88}
-                y={Math.max(PAD_T + 2, y(mainEndV) - 30)}
-                width="86"
-                height="20"
+                x={W - PAD_R - 100}
+                y={Math.max(PAD_T + 2, y(mainEndV) - 32)}
+                width="98"
+                height="22"
                 fill="var(--kami-2)"
                 stroke="var(--sumi)"
                 strokeWidth="1"
               />
               <text
-                x={W - PAD_R - 45}
-                y={Math.max(PAD_T + 2, y(mainEndV) - 30) + 14}
-                fontSize="12"
+                x={W - PAD_R - 51}
+                y={Math.max(PAD_T + 2, y(mainEndV) - 32) + 16}
+                fontSize={JI_FUDA}
                 fill="var(--sumi)"
                 textAnchor="middle"
                 className="suji"

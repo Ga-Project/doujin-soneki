@@ -51,6 +51,11 @@ export interface SimSaved {
   fixedEvent: string;
   fixedOther: string;
   isSample: boolean;
+  /**
+   * 保存時刻（epoch ms・省略可）。saveSim が自動付与し、復元バーの
+   * 「（7月10日）」表示に使う。旧データには無く、その場合は日付なし文言に縮退する。
+   */
+  savedAt?: number;
 }
 
 export interface TallySaved {
@@ -125,7 +130,7 @@ function asSimSaved(v: unknown): SimSaved | null {
     channels.push(ch);
   }
   if (tiers.length === 0 || channels.length === 0) return null;
-  return {
+  const out: SimSaved = {
     v: 1,
     price,
     tiers,
@@ -136,6 +141,9 @@ function asSimSaved(v: unknown): SimSaved | null {
     fixedOther,
     isSample,
   };
+  // savedAt は省略可（旧データ互換）。不正値は無かったものとして読み捨てる
+  if (num(v.savedAt)) out.savedAt = v.savedAt;
+  return out;
 }
 
 function asTallyItem(v: unknown): TallyItem | null {
@@ -221,7 +229,8 @@ export function loadSim(): SimSaved | null {
   return asSimSaved(loadRaw(SIM_STORAGE_NAME));
 }
 export function saveSim(state: SimSaved): boolean {
-  return saveRaw(SIM_STORAGE_NAME, state);
+  // 保存時刻を自動付与（復元バーの日付表示用）
+  return saveRaw(SIM_STORAGE_NAME, { ...state, savedAt: Date.now() });
 }
 export function clearSim(): void {
   try {

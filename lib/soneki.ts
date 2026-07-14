@@ -395,6 +395,17 @@ export function formatChobo(n: number): { text: string; aria: string } {
 }
 
 /**
+ * 復元バーの保存日表示「7月10日」。savedAt は localStorage 由来の epoch ms。
+ * 旧データ（savedAt なし）や不正値は null を返し、呼び出し側は日付なし文言に縮退する。
+ */
+export function formatSavedDate(savedAt: unknown): string | null {
+  if (typeof savedAt !== "number" || !Number.isFinite(savedAt)) return null;
+  const d = new Date(savedAt);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/**
  * 線図の Y 軸・KPI の単位切替（統計年鑑様式）。最大絶対値が 10 万円以上なら
  * 「（単位：万円）」に切り替え、目盛は除数 10,000 で割った値を表示する。
  */

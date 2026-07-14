@@ -5,13 +5,14 @@
 // レイアウトは帳面グリッド（ツメ列 / 記入欄 / 集計欄）。入力は左、答えは右。
 // 入力エラー時も直前の有効な勘定尻・線図は捨てず、「検算中」札つきで淡く保持する。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activeChannelIds,
   allocationProfit,
   breakEvenCopies,
   breakEvenExact,
   formatChobo,
+  formatSavedDate,
   MAX_COPIES,
   netPerCopy,
   normalizeTier,
@@ -159,6 +160,8 @@ interface ViewSnap {
   plannedTotal: number;
   plannedBlocked: boolean;
   allocation: number | null;
+  /** 凡例も線図と同じスナップショット由来（検算中の過渡不整合を作らない）。 */
+  legend: LegendRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +171,8 @@ export function Simulator() {
   const [loaded, setLoaded] = useState(false);
   const [storageOk, setStorageOk] = useState(true);
   const [restored, setRestored] = useState(false);
+  // 復元した保存の保存時刻（旧データには無い → 日付なし文言に縮退）
+  const [restoredAt, setRestoredAt] = useState<number | null>(null);
   const [restoreDismissed, setRestoreDismissed] = useState(false);
   const [confirmHakushi, setConfirmHakushi] = useState(false);
   // 「表で見る」は開いているときだけ表を組み立てる
@@ -175,6 +180,7 @@ export function Simulator() {
   // 勘定尻バー: 線図が視界内にある間は退避（IntersectionObserver・漸進的強化）
   const [barTaihi, setBarTaihi] = useState(false);
   const senzuRef = useRef<HTMLDivElement | null>(null);
+  const senzuIORef = useRef<IntersectionObserver | null>(null);
   const shukeiRef = useRef<HTMLElement | null>(null);
 
   // 初回マウント時に前回値を復元（SSR とのハイドレーション不一致を避けるため effect で行う）
@@ -186,6 +192,7 @@ export function Simulator() {
       if (saved !== null) {
         setState(normalizeMain(saved));
         setRestored(true);
+        setRestoredAt(saved.savedAt ?? null);
       }
     }
     setLoaded(true);
@@ -197,15 +204,23 @@ export function Simulator() {
     saveSim(state);
   }, [state, loaded, storageOk]);
 
-  // 線図が視界内なら勘定尻バーを退避（未対応環境ではバーが常時出るだけ）
-  useEffect(() => {
-    const el = senzuRef.current;
-    if (el === null || typeof IntersectionObserver === "undefined") return;
+  // 線図が視界内なら勘定尻バーを退避（未対応環境ではバーが常時出るだけ）。
+  // 線図の div は記帳がそろうまでレンダーされないため、マウント時 1 回の effect では
+  // observe できない（初回は対象が存在しない）。callback ref でノードの着脱に同期して
+  // 接続・切断する。ノードが消えたらバーは通常表示に戻す。
+  const attachSenzu = useCallback((node: HTMLDivElement | null): void => {
+    senzuRef.current = node;
+    senzuIORef.current?.disconnect();
+    senzuIORef.current = null;
+    if (node === null || typeof IntersectionObserver === "undefined") {
+      setBarTaihi(false);
+      return;
+    }
     const io = new IntersectionObserver(([entry]) => {
       setBarTaihi(entry?.isIntersecting ?? false);
     });
-    io.observe(el);
-    return () => io.disconnect();
+    io.observe(node);
+    senzuIORef.current = io;
   }, []);
 
   /** ユーザー編集（見本印を外す + 主チャネル整合）。 */
@@ -437,6 +452,9 @@ export function Simulator() {
     range,
   } = derived;
 
+  // 頒価欄のエラー判定（aria-invalid と訂正文・aria-describedby の紐付けを共有）
+  const priceInvalid = state.price !== "" && (price === null || price <= 0);
+
   // --- ハンドラ -----------------------------------------------------------
 
   /** 選択中の行が未完成なら、完成している最初の行に選択を移す。 */
@@ -560,46 +578,8 @@ export function Simulator() {
       : null;
   const neverProfits = ready && mainSeries !== null && mainSeries.net <= 0;
 
-  const liveView: ViewSnap | null =
-    ready && selectedTier !== null && price !== null
-      ? {
-          copies: selectedTier.copies,
-          baseCost,
-          price,
-          seriesAll,
-          mainSeries,
-          mainBreakEven,
-          mainBreakEvenExact: mainSeries?.breakEvenExactK ?? null,
-          mainSellout,
-          mainPerCopy,
-          neverProfits,
-          range,
-          plans,
-          plannedTotal,
-          plannedBlocked,
-          allocation,
-        }
-      : null;
-  const lastValidRef = useRef<ViewSnap | null>(null);
-  useEffect(() => {
-    if (liveView !== null) lastValidRef.current = liveView;
-  });
-  // 検算中: 直前の有効な勘定を淡く保持（有効値が一度も無ければ null → 空状態）
-  const view = liveView ?? lastValidRef.current;
-  const kensanchu = liveView === null && view !== null;
-
-  const errorList = [...missing, ...rowErrors, ...feeErrors, ...plannedErrors];
-  // エラー id → 訂正すべき欄のアンカー（既定はエラー id と同名の入力 id）
-  const errHref = (id: string): string => {
-    if (id === "missing-price") return "#price-input";
-    if (id === "missing-tier" || id.startsWith("row-")) return "#cho-2";
-    return `#${id}`;
-  };
-
-  // 上限判定は「委託チャネルの行数」基準（表示 OFF・手数料未入力の行も数える）
-  const consignRows = state.channels.filter((c) => c.kind === "consign").length;
-
-  // 凡例（線図表示のトグルは第三丁と同一 state = 双方向同期）
+  // 凡例（線図表示のトグルは第三丁と同一 state = 双方向同期）。
+  // 検算中の過渡不整合を作らないため、線図と同じくスナップショットに含める。
   const legend: LegendRow[] = (() => {
     let ci = 0;
     const rows: LegendRow[] = [];
@@ -625,6 +605,46 @@ export function Simulator() {
     }
     return rows;
   })();
+
+  const liveView: ViewSnap | null =
+    ready && selectedTier !== null && price !== null
+      ? {
+          copies: selectedTier.copies,
+          baseCost,
+          price,
+          seriesAll,
+          mainSeries,
+          mainBreakEven,
+          mainBreakEvenExact: mainSeries?.breakEvenExactK ?? null,
+          mainSellout,
+          mainPerCopy,
+          neverProfits,
+          range,
+          plans,
+          plannedTotal,
+          plannedBlocked,
+          allocation,
+          legend,
+        }
+      : null;
+  const lastValidRef = useRef<ViewSnap | null>(null);
+  useEffect(() => {
+    if (liveView !== null) lastValidRef.current = liveView;
+  });
+  // 検算中: 直前の有効な勘定を淡く保持（有効値が一度も無ければ null → 空状態）
+  const view = liveView ?? lastValidRef.current;
+  const kensanchu = liveView === null && view !== null;
+
+  const errorList = [...missing, ...rowErrors, ...feeErrors, ...plannedErrors];
+  // エラー id → 訂正すべき欄のアンカー（既定はエラー id と同名の入力 id）
+  const errHref = (id: string): string => {
+    if (id === "missing-price") return "#price-input";
+    if (id === "missing-tier" || id.startsWith("row-")) return "#cho-2";
+    return `#${id}`;
+  };
+
+  // 上限判定は「委託チャネルの行数」基準（表示 OFF・手数料未入力の行も数える）
+  const consignRows = state.channels.filter((c) => c.kind === "consign").length;
 
   const chartAria =
     view !== null
@@ -687,7 +707,12 @@ export function Simulator() {
         <div className="kinyu-ran">
           {restored && !restoreDismissed && (
             <div className="fukugen" role="status">
-              <span>前回の帳面を開きました</span>
+              <span>
+                前回の帳面を開きました
+                {formatSavedDate(restoredAt) !== null && (
+                  <>（{formatSavedDate(restoredAt)}）</>
+                )}
+              </span>
               <span className="migiyose">
                 {confirmHakushi ? (
                   <>
@@ -764,14 +789,13 @@ export function Simulator() {
                     onChange={(e) =>
                       edit((s) => ({ ...s, price: e.target.value }))
                     }
-                    aria-invalid={
-                      state.price !== "" && (price === null || price <= 0)
-                    }
-                    aria-describedby="price-teisei"
+                    aria-invalid={priceInvalid}
+                    // エラー非表示時に空参照を残さない（存在するときだけ紐付ける）
+                    aria-describedby={priceInvalid ? "price-teisei" : undefined}
                   />
                   <span className="tani">円</span>
                 </div>
-                {state.price !== "" && (price === null || price <= 0) && (
+                {priceInvalid && (
                   <p className="teisei" id="price-teisei">
                     訂正：頒価が未記入です
                   </p>
@@ -793,6 +817,8 @@ export function Simulator() {
           <section className="cho" id="cho-2" aria-labelledby="cho-2-midashi">
             <h2 className="cho-midashi" id="cho-2-midashi">
               <span className="kansuji">二</span>印刷費（単価表）
+              {/* 見本印はスクロール中も見本値と分かるよう各丁の右肩にも捺す */}
+              {state.isSample && <span className="mihon">見本</span>}
             </h2>
             <p className="cho-hosoku sai">
               印刷所の見積の、部数と単価をそのまま書き写せば足ります。単価か総額、書きやすいほうで。
@@ -1002,6 +1028,7 @@ export function Simulator() {
           <section className="cho" id="cho-3" aria-labelledby="cho-3-midashi">
             <h2 className="cho-midashi" id="cho-3-midashi">
               <span className="kansuji">三</span>頒布チャネル
+              {state.isSample && <span className="mihon">見本</span>}
             </h2>
             <p className="cho-hosoku sai">
               委託価格×料率＋定額が1冊ごとに引かれます。料率は各委託先の最新の案内に記載の値を。
@@ -1380,7 +1407,16 @@ export function Simulator() {
                       </>
                     )}
                   </div>
-                  <p className="kanjo-hochu sai" aria-live="polite">
+                  <p
+                    className="kanjo-hochu sai"
+                    aria-live="polite"
+                    // 黒字化不能は朱補注（§7）。朱の予算制の「警告」用途
+                    style={
+                      view.neverProfits || view.mainBreakEven === null
+                        ? { color: "var(--shu)" }
+                        : undefined
+                    }
+                  >
                     {view.neverProfits || view.mainBreakEven === null
                       ? "この条件では黒字になりません"
                       : view.mainBreakEven <= view.copies
@@ -1392,21 +1428,33 @@ export function Simulator() {
                   <div>
                     <div className="ran">完売時損益</div>
                     <div className="kanjo-suji">
+                      {/* △表記は視覚用に伏せ、読み上げは formatChobo(...).aria を併記 */}
                       <span
                         className={`naka suji${chijimi(view.mainSellout)} ${view.mainSellout < 0 ? "akaji-ji" : "kuroji-ji"}`}
-                        aria-label={formatChobo(view.mainSellout).aria}
                       >
-                        {formatChobo(view.mainSellout).text}
+                        <span aria-hidden="true">
+                          {formatChobo(view.mainSellout).text}
+                        </span>
+                        <span className="sr-only">
+                          {formatChobo(view.mainSellout).aria}
+                        </span>
                       </span>
-                      <span className="tani">円</span>
+                      <span className="tani" aria-hidden="true">
+                        円
+                      </span>
                       <span
                         className={`fuda ${view.mainSellout < 0 ? "fuda-akaji" : "fuda-kuroji"}`}
                       >
                         {view.mainSellout < 0 ? "赤字" : "黒字"}
                       </span>
                     </div>
-                    <p className="kanjo-hochu sai suji">
-                      完売で {formatChobo(view.mainSellout).text}円
+                    <p className="kanjo-hochu sai suji" aria-live="polite">
+                      <span aria-hidden="true">
+                        完売で {formatChobo(view.mainSellout).text}円
+                      </span>
+                      <span className="sr-only">
+                        完売で {formatChobo(view.mainSellout).aria}
+                      </span>
                     </p>
                   </div>
                   <div>
@@ -1423,11 +1471,22 @@ export function Simulator() {
                         <>
                           <span
                             className={`naka suji ${view.mainPerCopy < 0 ? "akaji-ji" : "kuroji-ji"}`}
-                            aria-label={formatChobo(view.mainPerCopy).aria}
                           >
-                            {formatChobo(view.mainPerCopy).text}
+                            <span aria-hidden="true">
+                              {formatChobo(view.mainPerCopy).text}
+                            </span>
+                            <span className="sr-only">
+                              {formatChobo(view.mainPerCopy).aria}
+                            </span>
                           </span>
-                          <span className="tani">円</span>
+                          <span className="tani" aria-hidden="true">
+                            円
+                          </span>
+                          <span
+                            className={`fuda ${view.mainPerCopy < 0 ? "fuda-akaji" : "fuda-kuroji"}`}
+                          >
+                            {view.mainPerCopy < 0 ? "赤字" : "黒字"}
+                          </span>
                         </>
                       )}
                     </div>
@@ -1442,11 +1501,17 @@ export function Simulator() {
                 >
                   ※
                   この条件では何部刷っても黒字になりません。頒価を上げるか、印刷費・委託料率を見直してください。
+                  {view.range !== null && (
+                    <>
+                      {" "}
+                      <a href="#meyasu">頒価の目安レンジを見る</a>
+                    </>
+                  )}
                 </div>
               )}
 
               {/* 損益線図 */}
-              <div ref={senzuRef}>
+              <div ref={attachSenzu}>
                 <h3 className="shukei-komidashi">損益線図</h3>
                 <ProfitChart
                   ready
@@ -1458,7 +1523,8 @@ export function Simulator() {
                   breakEvenExactMain={
                     view.neverProfits ? null : view.mainBreakEvenExact
                   }
-                  legend={legend}
+                  legend={view.legend}
+                  frozen={kensanchu}
                   onSelectMain={selectMain}
                   onToggleVisible={(id, visible) =>
                     updateChannel(id, { visible })
@@ -1533,9 +1599,13 @@ export function Simulator() {
                                 ? "var(--shu)"
                                 : "var(--kuroji)",
                           }}
-                          aria-label={formatChobo(view.allocation).aria}
                         >
-                          {formatChobo(view.allocation).text}
+                          <span aria-hidden="true">
+                            {formatChobo(view.allocation).text}
+                          </span>
+                          <span className="sr-only">
+                            {formatChobo(view.allocation).aria}
+                          </span>
                         </strong>
                         <span
                           className={`fuda ${view.allocation < 0 ? "fuda-akaji" : "fuda-kuroji"}`}
@@ -1621,9 +1691,11 @@ export function Simulator() {
                                             ? { color: "var(--shu)" }
                                             : undefined
                                         }
-                                        aria-label={c.aria}
                                       >
-                                        {c.text}
+                                        <span aria-hidden="true">{c.text}</span>
+                                        <span className="sr-only">
+                                          {c.aria}
+                                        </span>
                                       </td>
                                     );
                                   })}

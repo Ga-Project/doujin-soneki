@@ -652,11 +652,17 @@ input.kinyu-input[aria-invalid="true"] {
   border: 1.5px solid var(--shu);
   border-radius: var(--kado-1);
   color: var(--shu);
+  font-family: var(--kaku);
   font-size: var(--ji-ran);
   font-weight: 600;
   letter-spacing: 0.15em;
   padding: 2px 8px;
   transform: rotate(-2deg);
+}
+/* 丁見出しの右肩の見本印（スクロール中も見本値と分かるように） */
+.cho-midashi .mihon {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* 状態札（分岐・完売・黒字・赤字・検算中） */
@@ -1161,6 +1167,8 @@ details.tatami > .tatami-body {
 }
 .hanrei .shu-radio {
   width: auto;
+  min-width: 44px; /* タッチヒット幅 44px を確保 */
+  justify-content: center;
   gap: 4px;
   display: inline-flex;
   align-items: center;
@@ -1297,9 +1305,10 @@ details.tatami > .tatami-body {
 .kanjo-bar.is-taihi {
   transform: translateY(110%);
 }
-/* 墨地の上でも読める明るい朱（固定値・両テーマ共通。実測 6.0 級） */
+/* 墨地の上でも読める明るい朱（固定値・両テーマ共通）。
+ * 実測: 光（墨地 hsl(220 20% 15%)）5.65 / 夜（kami-3 地 hsl(220 12% 19%)）4.89 — AA 充足 */
 .kanjo-bar .shu-ji {
-  color: hsl(10 78% 64%);
+  color: hsl(10 78% 66%);
 }
 @media (min-width: 1024px) {
   .kanjo-bar {
@@ -1456,7 +1465,8 @@ details.tatami > .tatami-body {
   font-weight: 600;
 }
 
-/* 金額スイッチ（枠罫トラック＋墨ノブ） */
+/* 金額スイッチ（枠罫トラック＋墨ノブ）。帳面の意匠に合わせて直角系、
+ * ON 時はノブ（判）に「入」を刻む */
 .kingaku-switch {
   display: inline-flex;
   align-items: center;
@@ -1472,7 +1482,7 @@ details.tatami > .tatami-body {
   height: 24px;
   margin: 0;
   border: var(--rule-waku);
-  border-radius: 12px;
+  border-radius: var(--kado-1);
   background: var(--kami-2);
   position: relative;
   cursor: pointer;
@@ -1485,14 +1495,20 @@ details.tatami > .tatami-body {
   left: 2px;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: 1px;
   background: var(--sumi);
+  color: var(--kami);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
   transition: transform var(--dur) var(--ease);
 }
 .kingaku-switch input:checked {
   background: var(--kami-3);
 }
 .kingaku-switch input:checked::after {
+  content: "入";
   transform: translateX(20px);
 }
 .kingaku-switch input:focus-visible {
@@ -1567,7 +1583,8 @@ details.tatami > .tatami-body {
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1;
 }
-.tally-zan .wazuka {
+/* 残りわずか・現在損益マイナス等の朱文字（/tally 全域で使う汎用クラス） */
+.wazuka {
   color: var(--shu);
 }
 .tally-shokei {

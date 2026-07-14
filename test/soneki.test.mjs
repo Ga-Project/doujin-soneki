@@ -30,6 +30,7 @@ import {
   formatSignedYen,
   compactYen,
   formatChobo,
+  formatSavedDate,
   formatAxis,
   formatAxisTick,
   applyTallyEvent,
@@ -399,6 +400,19 @@ test("formatChobo: 負数は△＋読み上げ「赤字」に開く（表示と 
   assert.deepEqual(formatChobo(0), { text: "0", aria: "0円" });
   // 端数は四捨五入
   assert.deepEqual(formatChobo(-96.4), { text: "△96", aria: "赤字 96円" });
+});
+
+test("formatSavedDate: 保存時刻を「7月10日」に開き、旧データ（savedAt なし）は null に縮退", () => {
+  // 復元バーの「（7月10日）」表示。ローカル時刻で構成した epoch ms から月日を開く
+  assert.equal(formatSavedDate(new Date(2026, 6, 10).getTime()), "7月10日");
+  assert.equal(formatSavedDate(new Date(2026, 11, 31).getTime()), "12月31日");
+  assert.equal(formatSavedDate(new Date(2026, 0, 1).getTime()), "1月1日");
+  // 旧データ互換: savedAt が無い（undefined/null）・不正型・非有限値は null → 日付なし文言
+  assert.equal(formatSavedDate(undefined), null);
+  assert.equal(formatSavedDate(null), null);
+  assert.equal(formatSavedDate("2026-07-10"), null);
+  assert.equal(formatSavedDate(Number.NaN), null);
+  assert.equal(formatSavedDate(Number.POSITIVE_INFINITY), null);
 });
 
 test("formatAxis / formatAxisTick: 10万円以上で（単位：万円）に切替", () => {

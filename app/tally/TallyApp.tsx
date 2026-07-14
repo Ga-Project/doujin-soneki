@@ -100,6 +100,8 @@ export function TallyApp() {
   const [storageOk, setStorageOk] = useState(true);
   const [restored, setRestored] = useState(false);
   const [restoreDismissed, setRestoreDismissed] = useState(false);
+  // 「白紙に戻す」のインライン確認（/ 側の復元バーと同一様式・window.confirm 不使用）
+  const [confirmHakushi, setConfirmHakushi] = useState(false);
   const [online, setOnline] = useState(true);
   const [seiriOpen, setSeiriOpen] = useState(false);
   const [suteppaOpen, setSuteppaOpen] = useState(false);
@@ -296,13 +298,14 @@ export function TallyApp() {
     }));
   };
 
+  // 復元バーの「白紙に戻す」。確認はバー内のインライン確認（confirmHakushi）で済ませる
   const restartAll = (): void => {
-    if (!window.confirm("前回の記帳を消して最初からやり直しますか？")) return;
     clearTally();
     setData({ items: [], history: [] });
     setActiveId(null);
     setRestored(false);
     setRestoreDismissed(true);
+    setConfirmHakushi(false);
   };
 
   // --- 表示 -----------------------------------------------------------------
@@ -344,6 +347,7 @@ export function TallyApp() {
         <span className="dai">当日の記帳</span>
         <label className="kingaku-switch">
           金額
+          {/* ON時の「入」はCSSでノブ側に刻む（.kingaku-switch input:checked::after） */}
           <input
             type="checkbox"
             checked={showMoney}
@@ -352,7 +356,6 @@ export function TallyApp() {
               if (e.target.checked) setKingakuNote(true);
             }}
           />
-          {showMoney && <span aria-hidden="true">入</span>}
         </label>
       </header>
 
@@ -373,21 +376,43 @@ export function TallyApp() {
           <div className="fukugen" role="status">
             <span>前回の記帳を開きました</span>
             <span className="migiyose">
-              <button
-                type="button"
-                className="bt bt-sub bt-sm"
-                onClick={restartAll}
-              >
-                白紙に戻す
-              </button>
-              <button
-                type="button"
-                className="bt-kesu"
-                aria-label="この知らせを閉じる"
-                onClick={() => setRestoreDismissed(true)}
-              >
-                ×
-              </button>
+              {confirmHakushi ? (
+                <>
+                  <span className="sai">本当に白紙へ？</span>
+                  <button
+                    type="button"
+                    className="bt bt-shu bt-sm"
+                    onClick={restartAll}
+                  >
+                    戻す
+                  </button>
+                  <button
+                    type="button"
+                    className="bt bt-sub bt-sm"
+                    onClick={() => setConfirmHakushi(false)}
+                  >
+                    やめる
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="bt bt-sub bt-sm"
+                    onClick={() => setConfirmHakushi(true)}
+                  >
+                    白紙に戻す
+                  </button>
+                  <button
+                    type="button"
+                    className="bt-kesu"
+                    aria-label="この知らせを閉じる"
+                    onClick={() => setRestoreDismissed(true)}
+                  >
+                    ×
+                  </button>
+                </>
+              )}
             </span>
           </div>
         )}
@@ -437,7 +462,8 @@ export function TallyApp() {
           </div>
         )}
 
-        {tsuikaOpen && (
+        {/* ツメ帯からの＋追加（空状態では下の空状態ブロック内のフォームを使う） */}
+        {items.length > 0 && tsuikaOpen && (
           <div className="tsuika-ran">
             <div className="kinyu">
               <label className="ran" htmlFor="new-name">
@@ -507,14 +533,17 @@ export function TallyApp() {
         {items.length === 0 && loaded ? (
           <div className="kanjo-men">
             <p className="sai">頒布物を記帳して、当日のカウントを始めます。</p>
-            <button
-              type="button"
-              className="bt bt-main"
-              onClick={() => setTsuikaOpen(true)}
-              style={{ marginTop: "var(--ma-2)" }}
-            >
-              頒布物を追加
-            </button>
+            {/* 主ボタンは1画面1つ: フォーム展開中は「記帳する」に主役を譲る */}
+            {!tsuikaOpen && (
+              <button
+                type="button"
+                className="bt bt-main"
+                onClick={() => setTsuikaOpen(true)}
+                style={{ marginTop: "var(--ma-2)" }}
+              >
+                頒布物を追加
+              </button>
+            )}
             {tsuikaOpen && (
               <div className="tsuika-ran" style={{ marginTop: "var(--ma-2)" }}>
                 <div className="kinyu">
@@ -821,18 +850,22 @@ export function TallyApp() {
                                       ? "wazuka"
                                       : ""
                                   }
-                                  aria-label={
-                                    formatChobo(
-                                      totalRevenue - simMoney.baseCost,
-                                    ).aria
-                                  }
                                 >
-                                  {
-                                    formatChobo(
-                                      totalRevenue - simMoney.baseCost,
-                                    ).text
-                                  }
-                                  円
+                                  <span aria-hidden="true">
+                                    {
+                                      formatChobo(
+                                        totalRevenue - simMoney.baseCost,
+                                      ).text
+                                    }
+                                    円
+                                  </span>
+                                  <span className="sr-only">
+                                    {
+                                      formatChobo(
+                                        totalRevenue - simMoney.baseCost,
+                                      ).aria
+                                    }
+                                  </span>
                                 </span>
                               </>
                             )}

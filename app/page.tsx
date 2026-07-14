@@ -151,13 +151,15 @@ export default function Home() {
 
         <hr className="kugiri-hoso" />
 
-        {/* 但し書き（有料成果物・準備中） */}
+        {/* 但し書き（有料成果物・準備中）— 付箋様式（藍3px縦罫）・細字 */}
         <div className="daicho">
           <section className="tadashigaki">
-            <p className="sai">
-              但し書き —
-              収支レポートPDFと見積比較早見表を、外部ストアで頒布する準備をしています。この帳面の機能は今後も無料です。
-            </p>
+            <div className="fusen">
+              <p className="sai">
+                但し書き —
+                収支レポートPDFと見積比較早見表を、外部ストアで頒布する準備をしています。この帳面の機能は今後も無料です。
+              </p>
+            </div>
           </section>
         </div>
 
