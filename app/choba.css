@@ -1310,6 +1310,11 @@ details.tatami > .tatami-body {
 .kanjo-bar .shu-ji {
   color: hsl(10 78% 66%);
 }
+/* 検算中の旧値の淡表示（§7 と同じ扱い）。集計欄の .45 は明るい地紙上の値であり、
+ * 墨地のバー（17px 通常）では 0.6 が AA の下限側。合成後実測: 光 6.13 / 夜 5.05 */
+.kanjo-bar .kensan-usui {
+  opacity: 0.6;
+}
 @media (min-width: 1024px) {
   .kanjo-bar {
     display: none;

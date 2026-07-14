@@ -676,7 +676,8 @@ export function Simulator() {
   );
 
   const scrollToShukei = (): void => {
-    if (view === null && errorList.length > 0) {
+    // 検算中（旧値の淡表示）や計算不能のときは、まず訂正すべき欄へ誘導する
+    if ((kensanchu || view === null) && errorList.length > 0) {
       const first = errorList[0];
       if (first !== undefined) {
         document
@@ -1724,7 +1725,8 @@ export function Simulator() {
         </aside>
       </div>
 
-      {/* 勘定尻バー（モバイル固定・線図が視界内の間は退避） */}
+      {/* 勘定尻バー（モバイル固定・線図が視界内の間は退避）。
+          検算中は集計欄（§7）と同じく旧値を淡くし、朱の「検算中」で明示する */}
       <button
         type="button"
         className={`kanjo-bar suji${barTaihi ? " is-taihi" : ""}`}
@@ -1732,11 +1734,14 @@ export function Simulator() {
       >
         {view !== null ? (
           <span>
-            分岐{" "}
-            {view.neverProfits || view.mainBreakEven === null
-              ? "―"
-              : `${view.mainBreakEven.toLocaleString("ja-JP")}部`}
-            ｜完売 {formatChobo(view.mainSellout).text}円
+            {kensanchu && <span className="shu-ji">検算中・訂正あり </span>}
+            <span className={kensanchu ? "kensan-usui" : undefined}>
+              分岐{" "}
+              {view.neverProfits || view.mainBreakEven === null
+                ? "―"
+                : `${view.mainBreakEven.toLocaleString("ja-JP")}部`}
+              ｜完売 {formatChobo(view.mainSellout).text}円
+            </span>
           </span>
         ) : errorList.length > 0 ? (
           <span className="shu-ji">入力に訂正あり ▲</span>
