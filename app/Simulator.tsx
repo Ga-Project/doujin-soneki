@@ -24,6 +24,7 @@ import {
   perCopyAtSellout,
   priceRange,
   profitAt,
+  resolveKensanView,
   resolveMainChannelId,
   selloutProfit,
   tableStep,
@@ -182,6 +183,8 @@ export function Simulator() {
   const senzuRef = useRef<HTMLDivElement | null>(null);
   const senzuIORef = useRef<IntersectionObserver | null>(null);
   const shukeiRef = useRef<HTMLElement | null>(null);
+  // 直前の有効な勘定（検算中の継続表示用）。白紙に戻すときは破棄する
+  const lastValidRef = useRef<ViewSnap | null>(null);
 
   // 初回マウント時に前回値を復元（SSR とのハイドレーション不一致を避けるため effect で行う）
   useEffect(() => {
@@ -553,6 +556,8 @@ export function Simulator() {
 
   const resetAll = (): void => {
     clearSim();
+    // 白紙に戻したら旧勘定のスナップショットも破棄する（検算中として蘇らせない）
+    lastValidRef.current = null;
     setState({
       ...DEFAULT_STATE,
       tiers: DEFAULT_STATE.tiers.map((t) => ({ ...t })),
@@ -627,15 +632,18 @@ export function Simulator() {
           legend,
         }
       : null;
-  const lastValidRef = useRef<ViewSnap | null>(null);
   useEffect(() => {
     if (liveView !== null) lastValidRef.current = liveView;
   });
-  // 検算中: 直前の有効な勘定を淡く保持（有効値が一度も無ければ null → 空状態）
-  const view = liveView ?? lastValidRef.current;
-  const kensanchu = liveView === null && view !== null;
 
   const errorList = [...missing, ...rowErrors, ...feeErrors, ...plannedErrors];
+  // 検算中: 訂正エラーが出ている間だけ直前の有効な勘定を淡く保持する。
+  // 白紙・既定に戻した（エラーも入力も無い）ときは旧勘定を再利用せず空状態へ
+  const { view, kensanchu } = resolveKensanView(
+    liveView,
+    lastValidRef.current,
+    errorList.length > 0,
+  );
   // エラー id → 訂正すべき欄のアンカー（既定はエラー id と同名の入力 id）
   const errHref = (id: string): string => {
     if (id === "missing-price") return "#price-input";
@@ -893,8 +901,10 @@ export function Simulator() {
                                     name="tier-select"
                                     checked={erabi}
                                     disabled={norm === null}
+                                    // 他の入力と同じく edit() 経由（見本印の解除
+                                    // ＋主チャネル整合を通す）
                                     onChange={() =>
-                                      setState((s) => ({
+                                      edit((s) => ({
                                         ...s,
                                         selectedTierId: t.id,
                                       }))

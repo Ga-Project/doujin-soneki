@@ -146,7 +146,11 @@ export function ProfitChart({
   for (let k = 0; k <= xMax; k += xStep) xTicks.push(k);
 
   const main = series.find((s) => s.id === mainId) ?? null;
-  const yomiK = pinK ?? hoverK;
+  // アクティブなホバー/ドラッグ中は hoverK を優先し、指やポインタを離したら
+  // pinK にスナップバックする（pinK 優先だとピン後のスライド読み取りがロックされる）
+  const yomiK = hoverK ?? pinK;
+  // 「（留）」はピン値を読んでいるときだけ表示（ホバー中はピンと別の値を読んでいる）
+  const pinned = pinK !== null && yomiK === pinK;
 
   // ポインタ位置 → 25部刻みスナップ
   const snapFromEvent = (e: ReactPointerEvent<Element>): number | null => {
@@ -172,7 +176,8 @@ export function ProfitChart({
   const handleLeave = (): void => setHoverK(null);
   const handleKey = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (!ready) return;
-    const cur = pinK ?? hoverK ?? 0;
+    // 現在読んでいる値（hover 優先）から動かす
+    const cur = hoverK ?? pinK ?? 0;
     let next: number | null = null;
     if (e.key === "ArrowRight") next = Math.min(xMax, cur + kizami);
     if (e.key === "ArrowLeft") next = Math.max(0, cur - kizami);
@@ -181,6 +186,8 @@ export function ProfitChart({
     if (next !== null) {
       e.preventDefault();
       setPinK(next);
+      // ポインタが盤面上に残っていても、キーボードで動かした読取点を即時反映する
+      setHoverK(null);
     }
     if (e.key === "Escape") setPinK(null);
   };
@@ -533,9 +540,10 @@ export function ProfitChart({
                   fill={s.colorVar}
                 />
               ))}
+              {/* ピン位置の目印（ホバー中も留め置いた位置を示し続ける） */}
               {pinK !== null && (
                 <circle
-                  cx={x(yomiK)}
+                  cx={x(pinK)}
                   cy={H - PAD_B}
                   r="3"
                   fill="var(--keisen-waku)"
@@ -563,7 +571,7 @@ export function ProfitChart({
         {yomiK !== null && ready && (
           <div className="yomitori-fuda suji" aria-hidden="true">
             <div className="yomi-kashira">
-              {yomiK}部 の損益{pinK !== null ? "（留）" : ""}
+              {yomiK}部 の損益{pinned ? "（留）" : ""}
             </div>
             {yomiRows.map((r) => (
               <div key={r.id} className="yomi-gyo">
@@ -584,7 +592,7 @@ export function ProfitChart({
         {yomiK !== null && ready ? (
           <>
             <span>
-              {yomiK}部{pinK !== null ? "（留）" : ""}
+              {yomiK}部{pinned ? "（留）" : ""}
             </span>
             {yomiRows.map((r) => (
               <span key={r.id}>

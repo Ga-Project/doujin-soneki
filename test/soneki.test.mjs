@@ -33,6 +33,7 @@ import {
   formatSavedDate,
   formatAxis,
   formatAxisTick,
+  resolveKensanView,
   applyTallyEvent,
   undoTally,
   remainingCopies,
@@ -413,6 +414,34 @@ test("formatSavedDate: 保存時刻を「7月10日」に開き、旧データ（
   assert.equal(formatSavedDate("2026-07-10"), null);
   assert.equal(formatSavedDate(Number.NaN), null);
   assert.equal(formatSavedDate(Number.POSITIVE_INFINITY), null);
+});
+
+test("resolveKensanView: 検算中の継続表示はエラーがある間に限る（白紙では空状態）", () => {
+  const snap = { copies: 200 };
+  // 現在の入力が有効ならその勘定を表示（検算中ではない）
+  assert.deepEqual(resolveKensanView(snap, null, false), {
+    view: snap,
+    kensanchu: false,
+  });
+  assert.deepEqual(resolveKensanView(snap, { copies: 100 }, true), {
+    view: snap,
+    kensanchu: false,
+  });
+  // 訂正エラーが出ている間は直前の有効な勘定を「検算中」として保持
+  assert.deepEqual(resolveKensanView(null, snap, true), {
+    view: snap,
+    kensanchu: true,
+  });
+  // 白紙・既定に戻した（エラーも入力も無い）ときは旧勘定を再利用しない → 空状態
+  assert.deepEqual(resolveKensanView(null, snap, false), {
+    view: null,
+    kensanchu: false,
+  });
+  // 有効値が一度も無い + エラー → view なし（「―」プレースホルダ側）
+  assert.deepEqual(resolveKensanView(null, null, true), {
+    view: null,
+    kensanchu: false,
+  });
 });
 
 test("formatAxis / formatAxisTick: 10万円以上で（単位：万円）に切替", () => {

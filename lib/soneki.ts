@@ -406,6 +406,21 @@ export function formatSavedDate(savedAt: unknown): string | null {
 }
 
 /**
+ * 集計欄の表示スナップショット選択（検算中の継続表示規則・状態デザイン§7）。
+ *   - 現在の入力が有効 → その勘定（live）を表示
+ *   - 訂正すべきエラーがある → 直前の有効な勘定（lastValid）を「検算中」として保持
+ *   - エラーも入力も無い（白紙・既定へ戻した） → null（空状態。旧勘定を再利用しない）
+ */
+export function resolveKensanView<T>(
+  live: T | null,
+  lastValid: T | null,
+  hasErrors: boolean,
+): { view: T | null; kensanchu: boolean } {
+  const view = live ?? (hasErrors ? lastValid : null);
+  return { view, kensanchu: live === null && view !== null };
+}
+
+/**
  * 線図の Y 軸・KPI の単位切替（統計年鑑様式）。最大絶対値が 10 万円以上なら
  * 「（単位：万円）」に切り替え、目盛は除数 10,000 で割った値を表示する。
  */
