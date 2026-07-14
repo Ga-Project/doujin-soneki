@@ -380,6 +380,41 @@ export function compactYen(n: number): string {
   return `${sign}${abs.toLocaleString("ja-JP")}`;
 }
 
+/**
+ * 帳場様式の損益表記（会計慣行）。負数はマイナス記号でなく「△」で表し、
+ * 読み上げは「赤字/黒字 ◯円」に開く。表示と aria の対はこの 1 関数に集約する。
+ *   formatChobo(-12400) → { text: "△12,400", aria: "赤字 12,400円" }
+ *   formatChobo(48000)  → { text: "+48,000", aria: "黒字 48,000円" }
+ */
+export function formatChobo(n: number): { text: string; aria: string } {
+  const v = Math.round(n);
+  const abs = Math.abs(v).toLocaleString("ja-JP");
+  if (v < 0) return { text: `△${abs}`, aria: `赤字 ${abs}円` };
+  if (v > 0) return { text: `+${abs}`, aria: `黒字 ${abs}円` };
+  return { text: "0", aria: "0円" };
+}
+
+/**
+ * 線図の Y 軸・KPI の単位切替（統計年鑑様式）。最大絶対値が 10 万円以上なら
+ * 「（単位：万円）」に切り替え、目盛は除数 10,000 で割った値を表示する。
+ */
+export function formatAxis(maxAbs: number): {
+  unit: "円" | "万円";
+  divisor: 1 | 10000;
+} {
+  if (maxAbs >= 100000) return { unit: "万円", divisor: 10000 };
+  return { unit: "円", divisor: 1 };
+}
+
+/** 目盛数値の表示（formatAxis の除数適用後）。整数はそのまま・端数は 1 桁。 */
+export function formatAxisTick(value: number, divisor: 1 | 10000): string {
+  const v = value / divisor;
+  const rounded = Math.round(v * 10) / 10;
+  return Number.isInteger(rounded)
+    ? rounded.toLocaleString("ja-JP")
+    : rounded.toFixed(1);
+}
+
 // ---------------------------------------------------------------------------
 // シミュレータ ⇄ タリーの接続（保存済み入力からの損益パラメータ導出）
 // ---------------------------------------------------------------------------

@@ -1,11 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Script from "next/script";
-import "./globals.css";
-// 製品の "顔"（accent/neutral/radius/density）を globals の後に上書きする。
-import "./theme.css";
-// 製品固有レイアウト（製図台シミュレータ／頒布タリー）。
-import "./product.css";
+// デザインシステム「朱墨の帳場」— 本製品専用にゼロから構築したオリジナル体系。
+import "./choba.css";
 import { SITE_URL, GOATCOUNTER_CODE, GOATCOUNTER_CONFIGURED } from "./config";
 
 const title = "同人ソンエキ｜同人誌の損益分岐シミュレータ＆頒布カウンター";

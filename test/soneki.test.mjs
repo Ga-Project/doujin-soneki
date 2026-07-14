@@ -29,6 +29,9 @@ import {
   formatYen,
   formatSignedYen,
   compactYen,
+  formatChobo,
+  formatAxis,
+  formatAxisTick,
   applyTallyEvent,
   undoTally,
   remainingCopies,
@@ -382,6 +385,29 @@ test("formatYen / formatSignedYen / compactYen: 金額表記", () => {
   assert.equal(compactYen(15000), "+1.5万");
   assert.equal(compactYen(2500), "+2,500");
   assert.equal(compactYen(0), "0");
+});
+
+test("formatChobo: 負数は△＋読み上げ「赤字」に開く（表示と aria を1関数に集約）", () => {
+  assert.deepEqual(formatChobo(-12400), {
+    text: "△12,400",
+    aria: "赤字 12,400円",
+  });
+  assert.deepEqual(formatChobo(48000), {
+    text: "+48,000",
+    aria: "黒字 48,000円",
+  });
+  assert.deepEqual(formatChobo(0), { text: "0", aria: "0円" });
+  // 端数は四捨五入
+  assert.deepEqual(formatChobo(-96.4), { text: "△96", aria: "赤字 96円" });
+});
+
+test("formatAxis / formatAxisTick: 10万円以上で（単位：万円）に切替", () => {
+  assert.deepEqual(formatAxis(58000), { unit: "円", divisor: 1 });
+  assert.deepEqual(formatAxis(100000), { unit: "万円", divisor: 10000 });
+  assert.deepEqual(formatAxis(250000), { unit: "万円", divisor: 10000 });
+  assert.equal(formatAxisTick(125000, 10000), "12.5");
+  assert.equal(formatAxisTick(200000, 10000), "20");
+  assert.equal(formatAxisTick(2500, 1), "2,500");
 });
 
 test("タリー: +1 と Undo（直近操作の取り消しスタック）", () => {

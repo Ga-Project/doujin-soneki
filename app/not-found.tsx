@@ -1,9 +1,9 @@
 // 404 ページ。static export（output: "export"）では out/404.html に書き出され、
-// GitHub Pages の 404 になる。他ページと同じランドマーク・h1 は1つ・skip-link を持つ。
+// GitHub Pages の 404 になる。「朱墨の帳場」の読み物様式・h1 は1つ・skip-link を持つ。
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SiteHeader, SiteFooter } from "./chrome";
+import { Chogashira } from "./chrome";
 
 export const metadata: Metadata = {
   title: "ページが見つかりません｜同人ソンエキ",
@@ -14,33 +14,29 @@ export const metadata: Metadata = {
 export default function NotFound() {
   return (
     <>
-      <a className="skip-link" href="#main">
-        本文へスキップ
+      <a className="tobira" href="#honmon">
+        本文へ飛ぶ
       </a>
 
-      <SiteHeader />
+      <Chogashira />
 
-      <main id="main" tabIndex={-1} style={{ outline: "none" }}>
-        <section className="hero">
-          <div className="container container-narrow">
-            <span className="badge badge-accent">404</span>
-            <h1 style={{ marginTop: "var(--sp-4)" }}>
-              ページが<span className="accent-text">見つかりません</span>
-            </h1>
-            <p className="hero-lead">
-              お探しのページは見つかりませんでした。移動・削除されたか、URL
-              が誤っている可能性があります。
-            </p>
-            <div className="hero-actions">
-              <Link className="btn btn-primary" href="/">
-                ホームへ戻る
-              </Link>
-            </div>
+      <main id="honmon" tabIndex={-1} style={{ outline: "none" }}>
+        <article className="yomimono">
+          <h1>この丁は見つかりません</h1>
+          <p>
+            お探しのページは見つかりませんでした。移動・削除されたか、URL
+            が誤っている可能性があります。
+          </p>
+          <div style={{ marginTop: "var(--ma-3)" }}>
+            <Link className="bt bt-main" href="/">
+              帳面に戻る
+            </Link>
           </div>
-        </section>
+          <div className="okuzuke">
+            <p>奥付　同人ソンエキ</p>
+          </div>
+        </article>
       </main>
-
-      <SiteFooter />
     </>
   );
 }

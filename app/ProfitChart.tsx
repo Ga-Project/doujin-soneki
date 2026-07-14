@@ -1,79 +1,80 @@
 "use client";
 
-// 損益グラフ（インライン SVG・ライブラリ不使用）。
-// X 軸 = 頒布数（0〜刷り部数）、Y 軸 = 損益（円）。各チャネルは一次直線。
-// 黒字/赤字ゾーンの塗り分け・ゼロライン・損益分岐マーカー・完売点を描く。
-// 系列の切替ボタンとツールチップは HTML 要素（フォーカス可視化・44px タップ領域の確保）。
-// 同じ数値は KPI と「表で見る」の DOM テキストでも必ず取得できる（このグラフは強化表現）。
+// 損益線図（「朱墨の帳場」の実用線図・インライン SVG・ライブラリ不使用）。
+// 思想: 統計年鑑の線図。飾らない。ゼロ線＝水平線が最強の線で、その上下＝黒字/赤字が
+// 一目で分かることが全て。赤字ゾーンは朱の斜線ハッチ（帳簿の訂正斜線の引用）。
+// 詳細データの完全な代替は「表で見る」（25部刻みの損益表）が兼ねる。
+//
+// 読み取り: 25部刻みスナップの読取罫＋読取札（右上固定・カーソル追従させない）。
+// タップでピン留め・再タップで解除。キーボードは ←→ で25部刻み、Home/End で 0/完売。
 
 import {
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { compactYen, formatSignedYen, tickValues } from "@/lib/soneki";
-
-export type SeriesColor =
-  | "series-direct"
-  | "series-c1"
-  | "series-c2"
-  | "series-c3";
+import {
+  formatAxis,
+  formatAxisTick,
+  formatChobo,
+  tickValues,
+} from "@/lib/soneki";
 
 export interface ChartSeries {
   id: string;
   name: string;
-  colorClass: SeriesColor;
+  /** 系列色（CSS 変数参照）。朱は系列に使わない（朱の予算制）。 */
   colorVar: string;
-  /** stroke-dasharray（実線は undefined）。色・線種・末端ラベルの三重符号化。 */
+  /** 色見本 span 用のクラス（.iro-aozumi 等） */
+  colorClass: string;
+  /** stroke-dasharray（会場=実線は undefined）。色×線種の二重符号。 */
   dash?: string;
   /** 1 冊あたり手取り（円）。損益(k) = k × net − baseCost。 */
   net: number;
 }
 
+/** 凡例行（非表示・入力待ちの系列もトグル操作対象として並べる）。 */
+export interface LegendRow {
+  id: string;
+  name: string;
+  colorVar: string;
+  dash?: string;
+  visible: boolean;
+  isMain: boolean;
+  /** 計算対象（表示ON・入力有効・色枠内）か。主ラジオの活性に使う。 */
+  active: boolean;
+}
+
 interface Props {
   ready: boolean;
-  /** 刷り部数（X 軸上限）。ready=false のときは座標平面表示用のダミー。 */
   copies: number;
-  /** 印刷総額 + 固定費。 */
   baseCost: number;
   series: ChartSeries[];
   mainId: string | null;
-  /** 主チャネルの損益分岐の厳密交点（部・非整数可）。無ければ null。 */
+  /** 主チャネルの損益分岐（整数部・札用）と厳密交点（マーカー位置用）。 */
+  breakEvenMain: number | null;
   breakEvenExactMain: number | null;
-  /** マーカーのピル文言（例:「損益分岐 320部」）。 */
-  breakEvenLabel: string | null;
-  /** 完売点の文言（例:「完売 +¥12,400」）。 */
-  selloutLabel: string | null;
-  selloutPositive: boolean;
+  legend: LegendRow[];
   onSelectMain: (id: string) => void;
+  onToggleVisible: (id: string, visible: boolean) => void;
   ariaLabel: string;
-  /** 空状態オーバーレイ（軸だけの座標平面の上に重ねる）。 */
+  /** 空状態オーバーレイ等。 */
   children?: ReactNode;
 }
 
-const W = 720;
-const H = 450;
-const PAD_L = 64;
-const PAD_R = 88;
-const PAD_T = 24;
+const W = 400;
+const H = 300;
+const PAD_T = 16;
+const PAD_R = 24;
 const PAD_B = 40;
+const PAD_L = 64;
 const PLOT_W = W - PAD_L - PAD_R;
 const PLOT_H = H - PAD_T - PAD_B;
 
-/** ピル幅の概算（CJK 11px / それ以外 6.5px + 余白）。 */
-function estimatePillWidth(text: string): number {
-  let w = 0;
-  for (const ch of text) {
-    w += ch.charCodeAt(0) > 0x2000 ? 11 : 6.5;
-  }
-  return w + 20;
-}
-
-interface HoverState {
-  k: number;
-  mode: "mouse" | "touch";
-}
+/** 読取のスナップ刻み（部）。 */
+const YOMI_KIZAMI = 25;
 
 export function ProfitChart({
   ready,
@@ -81,20 +82,22 @@ export function ProfitChart({
   baseCost,
   series,
   mainId,
+  breakEvenMain,
   breakEvenExactMain,
-  breakEvenLabel,
-  selloutLabel,
-  selloutPositive,
+  legend,
   onSelectMain,
+  onToggleVisible,
   ariaLabel,
   children,
 }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [hover, setHover] = useState<HoverState | null>(null);
+  const [hoverK, setHoverK] = useState<number | null>(null);
+  const [pinK, setPinK] = useState<number | null>(null);
 
   const xMax = Math.max(1, copies);
+  const kizami = xMax < YOMI_KIZAMI ? 1 : YOMI_KIZAMI;
 
-  // Y ドメイン: 全系列の端点と 0 を含め、上下に 8% 余白。
+  // Y ドメイン: 全系列の端点と 0 を含め、上下 8% 余白
   let yMin = Math.min(0, -baseCost);
   let yMax = 0;
   for (const s of series) {
@@ -106,9 +109,7 @@ export function ProfitChart({
     yMin = -10000;
     yMax = 10000;
   }
-  if (yMax - yMin < 1) {
-    yMax = yMin + 1;
-  }
+  if (yMax - yMin < 1) yMax = yMin + 1;
   const pad = (yMax - yMin) * 0.08;
   const yTop = yMax + pad;
   const yBot = yMin - pad;
@@ -118,370 +119,471 @@ export function ProfitChart({
     PAD_T + ((yTop - v) / (yTop - yBot)) * PLOT_H;
   const y0 = y(0);
 
-  const xTicks = tickValues(0, xMax, 5).filter((v) => v >= 0 && v <= xMax);
+  // 軸: Y は nice-step、単位は最大絶対値で円/万円を切替（formatAxis）
+  const axis = formatAxis(Math.max(Math.abs(yTop), Math.abs(yBot)));
   const yTicks = tickValues(yBot, yTop, 5);
+  // X 主目盛: 標準は 50 部ごと、部数が多いときはキリ値に自動拡大
+  const xStep = Math.max(50, ...tickValues(0, xMax, 8).slice(1, 2));
+  const xTicks: number[] = [];
+  for (let k = 0; k <= xMax; k += xStep) xTicks.push(k);
 
-  // 主チャネルを最後（最前面）に描く
-  const ordered = [...series].sort(
-    (a, b) => (a.id === mainId ? 1 : 0) - (b.id === mainId ? 1 : 0),
-  );
   const main = series.find((s) => s.id === mainId) ?? null;
+  const yomiK = pinK ?? hoverK;
 
-  // ポインタ位置 → 最近傍の部数スナップ
-  const handlePointer = (e: ReactPointerEvent<SVGRectElement>): void => {
+  // ポインタ位置 → 25部刻みスナップ
+  const snapFromEvent = (e: ReactPointerEvent<Element>): number | null => {
     const svg = svgRef.current;
-    if (svg === null || !ready) return;
+    if (svg === null) return null;
     const rect = svg.getBoundingClientRect();
     const relX = ((e.clientX - rect.left) / rect.width) * W;
-    const k = Math.min(
-      xMax,
-      Math.max(0, Math.round(((relX - PAD_L) / PLOT_W) * xMax)),
-    );
-    setHover({ k, mode: e.pointerType === "touch" ? "touch" : "mouse" });
+    const raw = ((relX - PAD_L) / PLOT_W) * xMax;
+    const snapped = Math.round(raw / kizami) * kizami;
+    return Math.min(xMax, Math.max(0, snapped));
   };
-  const handleLeave = (): void => {
-    // タッチはグラフ直下の固定読み出し行に残す（指で隠れない）。マウスのみ消す。
-    setHover((h) => (h !== null && h.mode === "mouse" ? null : h));
+  const handleMove = (e: ReactPointerEvent<Element>): void => {
+    if (!ready) return;
+    const k = snapFromEvent(e);
+    if (k !== null) setHoverK(k);
+  };
+  const handleDown = (e: ReactPointerEvent<Element>): void => {
+    if (!ready) return;
+    const k = snapFromEvent(e);
+    if (k === null) return;
+    setPinK((prev) => (prev === k ? null : k)); // タップでピン留め・再タップで解除
+  };
+  const handleLeave = (): void => setHoverK(null);
+  const handleKey = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (!ready) return;
+    const cur = pinK ?? hoverK ?? 0;
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = Math.min(xMax, cur + kizami);
+    if (e.key === "ArrowLeft") next = Math.max(0, cur - kizami);
+    if (e.key === "Home") next = 0;
+    if (e.key === "End") next = xMax;
+    if (next !== null) {
+      e.preventDefault();
+      setPinK(next);
+    }
+    if (e.key === "Escape") setPinK(null);
   };
 
-  // 線末端ラベル（HTML ボタン）の縦位置を重ならないように分散（最小間隔 10%）
-  const endLabels = series
-    .map((s) => ({
-      s,
-      topPct: (y(ready ? xMax * s.net - baseCost : 0) / H) * 100,
-    }))
-    .sort((a, b) => a.topPct - b.topPct);
-  for (let i = 0; i < endLabels.length; i += 1) {
-    const item = endLabels[i];
-    if (item === undefined) continue;
-    const prev = endLabels[i - 1];
-    const minTop = prev === undefined ? 6 : prev.topPct + 10;
-    item.topPct = Math.min(94, Math.max(item.topPct, minTop));
-  }
+  const yomiRows =
+    yomiK !== null && ready
+      ? series.map((s) => {
+          const v = yomiK * s.net - baseCost;
+          return { id: s.id, name: s.name, v, chobo: formatChobo(v) };
+        })
+      : [];
+  const yomiAria =
+    yomiK !== null && yomiRows.length > 0
+      ? `${yomiK}部。` +
+        yomiRows.map((r) => `${r.name} ${r.chobo.aria}`).join("、")
+      : "";
 
-  // 損益分岐マーカー
+  // マーカー（主チャネル）
   const bex =
     ready && breakEvenExactMain !== null && breakEvenExactMain <= xMax
       ? x(breakEvenExactMain)
       : null;
-  const pillText = breakEvenLabel ?? "";
-  const pillW = estimatePillWidth(pillText);
-  const pillCx =
-    bex === null
-      ? 0
-      : Math.min(W - PAD_R - pillW / 2, Math.max(PAD_L + pillW / 2, bex));
-  const pillAbove = bex !== null && y0 - PAD_T > 56;
-  const pillY = pillAbove ? y0 - 44 : y0 + 16;
-
-  // 完売点（主チャネル）
-  const mainEndY = main !== null ? y(xMax * main.net - baseCost) : 0;
-
-  const tipRows =
-    hover !== null && ready
-      ? series.map((s) => ({
-          id: s.id,
-          name: s.name,
-          colorClass: s.colorClass,
-          value: formatSignedYen(hover.k * s.net - baseCost),
-        }))
-      : [];
+  const mainEndV = main !== null ? xMax * main.net - baseCost : 0;
 
   return (
     <>
-      <div className="chart-card">
-        <div className="chart-wrap">
-          <svg
-            ref={svgRef}
-            viewBox={`0 0 ${W} ${H}`}
-            role="img"
-            aria-label={ariaLabel}
-            preserveAspectRatio="xMidYMid meet"
-          >
-            {/* 黒字/赤字ゾーン（淡色 tint。情報の主担体にはしない） */}
-            {yTop > 0 && (
-              <rect
-                x={PAD_L}
-                y={PAD_T}
-                width={PLOT_W}
-                height={Math.max(0, y0 - PAD_T)}
-                fill="var(--chart-zone-profit)"
+      {/* 凡例（盤面上部1行・第三丁のトグルと双方向同期） */}
+      <div className="hanrei">
+        {legend.map((row) => (
+          <span key={row.id} className="hanrei-kumi">
+            <svg
+              className="hanrei-sen"
+              viewBox="0 0 24 12"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <line
+                x1="0"
+                y1="6"
+                x2="24"
+                y2="6"
+                stroke={row.colorVar}
+                strokeWidth="2.5"
+                strokeDasharray={row.dash}
               />
-            )}
-            {yBot < 0 && (
+            </svg>
+            <span>{row.name}</span>
+            <label className="shu-radio">
+              <input
+                type="radio"
+                name="hanrei-main"
+                checked={row.isMain}
+                disabled={!row.active}
+                onChange={() => onSelectMain(row.id)}
+                aria-label={`${row.name}を主チャネルにする`}
+              />
+              <span aria-hidden="true">主</span>
+            </label>
+            <label className="sumi-check">
+              <input
+                type="checkbox"
+                checked={row.visible}
+                onChange={(e) => onToggleVisible(row.id, e.target.checked)}
+                aria-label={`${row.name}を線図に表示`}
+              />
+              表示
+            </label>
+          </span>
+        ))}
+      </div>
+
+      <div
+        className="senzu-waku"
+        style={{ position: "relative" }}
+        tabIndex={0}
+        role="img"
+        aria-label={`${ariaLabel}${yomiAria === "" ? "" : ` 読取: ${yomiAria}`}`}
+        onKeyDown={handleKey}
+      >
+        <svg
+          ref={svgRef}
+          className="senzu-svg"
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="xMidYMid meet"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <defs>
+            {/* 朱の斜線ハッチ（帳簿の訂正斜線） */}
+            <pattern
+              id="hatch-akaji"
+              width="6"
+              height="6"
+              patternUnits="userSpaceOnUse"
+              patternTransform="rotate(45)"
+            >
+              <line
+                x1="0"
+                y1="0"
+                x2="0"
+                y2="6"
+                stroke="var(--hatch)"
+                strokeWidth="1"
+              />
+            </pattern>
+          </defs>
+
+          {/* 黒字ゾーン（淡）・赤字ゾーン（朱6%＋ハッチ）: 位置×模様の二重符号 */}
+          {yTop > 0 && (
+            <rect
+              x={PAD_L}
+              y={PAD_T}
+              width={PLOT_W}
+              height={Math.max(0, y0 - PAD_T)}
+              fill="var(--zone-kuroji)"
+            />
+          )}
+          {yBot < 0 && (
+            <>
               <rect
                 x={PAD_L}
                 y={y0}
                 width={PLOT_W}
                 height={Math.max(0, H - PAD_B - y0)}
-                fill="var(--chart-zone-loss)"
+                fill="var(--zone-akaji)"
               />
-            )}
-            {/* ゾーンラベル（色だけに頼らないための直書きテキスト） */}
-            {y0 - PAD_T > 26 && (
-              <text
-                x={PAD_L + 10}
-                y={PAD_T + 16}
-                fontSize="11"
-                fill="var(--text-dim)"
-              >
-                黒字
-              </text>
-            )}
-            {H - PAD_B - y0 > 26 && (
-              <text
-                x={PAD_L + 10}
-                y={H - PAD_B - 10}
-                fontSize="11"
-                fill="var(--text-dim)"
-              >
-                赤字
-              </text>
-            )}
-
-            {/* グリッド（キリ値・製図的に細く） */}
-            {yTicks.map((v) => (
-              <g key={`y${v}`}>
-                <line
-                  x1={PAD_L}
-                  x2={W - PAD_R}
-                  y1={y(v)}
-                  y2={y(v)}
-                  stroke="var(--chart-grid)"
-                  strokeWidth="1"
-                  shapeRendering="crispEdges"
-                />
-                <text
-                  x={PAD_L - 8}
-                  y={y(v) + 4}
-                  fontSize="11"
-                  fill="var(--text-dim)"
-                  textAnchor="end"
-                  className="tabular"
-                >
-                  {compactYen(v)}
-                </text>
-              </g>
-            ))}
-            {xTicks.map((v) => (
-              <g key={`x${v}`}>
-                <line
-                  x1={x(v)}
-                  x2={x(v)}
-                  y1={PAD_T}
-                  y2={H - PAD_B}
-                  stroke="var(--chart-grid)"
-                  strokeWidth="1"
-                  shapeRendering="crispEdges"
-                />
-                <text
-                  x={x(v)}
-                  y={H - PAD_B + 18}
-                  fontSize="11"
-                  fill="var(--text-dim)"
-                  textAnchor="middle"
-                  className="tabular"
-                >
-                  {v === 0 ? "0" : `${v}部`}
-                </text>
-              </g>
-            ))}
-
-            {/* ゼロライン（グリッドより明確に強く） */}
-            <line
-              x1={PAD_L}
-              x2={W - PAD_R}
-              y1={y0}
-              y2={y0}
-              stroke="var(--chart-zero)"
-              strokeWidth="1.5"
-              shapeRendering="crispEdges"
-            />
-
-            {/* クロスヘア（最近傍の部数にスナップ） */}
-            {hover !== null && ready && (
-              <line
-                x1={x(hover.k)}
-                x2={x(hover.k)}
-                y1={PAD_T}
-                y2={H - PAD_B}
-                stroke="var(--chart-zero)"
-                strokeWidth="1"
-                strokeDasharray="4 4"
-              />
-            )}
-
-            {/* 系列線（色 + 線種 + 末端ラベルの三重符号化） */}
-            {ready &&
-              ordered.map((s) => (
-                <path
-                  key={s.id}
-                  className="chart-line"
-                  d={`M ${x(0)} ${y(-baseCost)} L ${x(xMax)} ${y(xMax * s.net - baseCost)}`}
-                  stroke={s.colorVar}
-                  strokeDasharray={s.dash}
-                  strokeLinecap="round"
-                  opacity={s.id === mainId || mainId === null ? 1 : 0.75}
-                />
-              ))}
-
-            {/* 損益分岐マーカー（主チャネル線と y=0 の交点） */}
-            {bex !== null && (
-              <g>
-                <line
-                  x1={bex}
-                  x2={bex}
-                  y1={PAD_T}
-                  y2={y0}
-                  stroke="var(--accent)"
-                  strokeWidth="1"
-                  strokeDasharray="4 4"
-                />
-                <circle
-                  cx={bex}
-                  cy={y0}
-                  r="5"
-                  fill="var(--accent)"
-                  stroke="var(--bg)"
-                  strokeWidth="2"
-                />
-                {breakEvenLabel !== null && (
-                  <g>
-                    <rect
-                      x={pillCx - pillW / 2}
-                      y={pillY}
-                      width={pillW}
-                      height={22}
-                      rx={11}
-                      fill="var(--accent-tint)"
-                      stroke="var(--accent)"
-                      strokeOpacity="0.35"
-                    />
-                    <text
-                      x={pillCx}
-                      y={pillY + 15}
-                      fontSize="11"
-                      fontWeight="700"
-                      fill="var(--accent)"
-                      textAnchor="middle"
-                      className="tabular"
-                    >
-                      {pillText}
-                    </text>
-                  </g>
-                )}
-              </g>
-            )}
-
-            {/* 完売点（主チャネルの線末端） */}
-            {ready && main !== null && (
-              <g>
-                <circle
-                  cx={x(xMax)}
-                  cy={mainEndY}
-                  r="3.5"
-                  fill={selloutPositive ? "var(--ok)" : "var(--err)"}
-                />
-                {selloutLabel !== null && (
-                  <text
-                    x={x(xMax) - 6}
-                    y={mainEndY < PAD_T + 24 ? mainEndY + 18 : mainEndY - 10}
-                    fontSize="11"
-                    fontWeight="700"
-                    fill={selloutPositive ? "var(--ok)" : "var(--err)"}
-                    textAnchor="end"
-                    className="tabular"
-                  >
-                    {selloutLabel}
-                  </text>
-                )}
-              </g>
-            )}
-
-            {/* ポインタ捕捉レイヤ（ホバー/タップ/ドラッグでスナップ読み取り） */}
-            {ready && (
               <rect
                 x={PAD_L}
-                y={PAD_T}
+                y={y0}
                 width={PLOT_W}
-                height={PLOT_H}
-                fill="transparent"
-                onPointerMove={handlePointer}
-                onPointerDown={handlePointer}
-                onPointerLeave={handleLeave}
+                height={Math.max(0, H - PAD_B - y0)}
+                fill="url(#hatch-akaji)"
               />
-            )}
-          </svg>
-
-          {/* 系列末端ラベル（HTML ボタン: クリックで主チャネル切替・44px タップ領域）。
-              left + max-width = 100% を対で指定し、コンテナ外へのはみ出しをゼロにする */}
-          {ready &&
-            endLabels.map(({ s, topPct }) => {
-              const leftPct = ((W - PAD_R + 2) / W) * 100;
-              return (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`chart-endlabel ${s.colorClass}`}
-                  style={{
-                    left: `${leftPct}%`,
-                    top: `${topPct}%`,
-                    maxWidth: `${100 - leftPct}%`,
-                  }}
-                  aria-pressed={s.id === mainId}
-                  aria-label={`${s.name}を主チャネルにする`}
-                  onClick={() => onSelectMain(s.id)}
-                >
-                  <span className="endlabel-pill">
-                    <span className="endlabel-text">{s.name}</span>
-                  </span>
-                </button>
-              );
-            })}
-
-          {/* ツールチップ（マウスのみ。タッチは下の固定読み出し行へ） */}
-          {hover !== null && hover.mode === "mouse" && ready && (
-            <div
-              className="chart-tip tabular"
-              style={{
-                left: `${Math.min(80, Math.max(20, (x(hover.k) / W) * 100))}%`,
-                top: "10%",
-                transform: "translateX(-50%)",
-              }}
+            </>
+          )}
+          {/* ゾーン名の直置きラベル */}
+          {y0 - PAD_T > 24 && (
+            <text
+              x={PAD_L + 8}
+              y={PAD_T + 16}
+              fontSize="11"
+              fill="var(--sumi-2)"
             >
-              <div className="tip-title">{hover.k}部頒布時</div>
-              {tipRows.map((r) => (
-                <div key={r.id}>
-                  <span className={r.colorClass}>
-                    <span className="series-swatch" />
-                  </span>{" "}
-                  {r.name}: {r.value}
-                </div>
-              ))}
-            </div>
+              黒字
+            </text>
+          )}
+          {H - PAD_B - y0 > 24 && (
+            <text
+              x={PAD_L + 8}
+              y={H - PAD_B - 8}
+              fontSize="11"
+              fill="var(--sumi-2)"
+            >
+              赤字
+            </text>
           )}
 
-          {/* 空状態オーバーレイ（軸とグリッドだけの座標平面の上） */}
-          {children}
-        </div>
+          {/* 単位注記（統計年鑑様式） */}
+          <text x={8} y={12} fontSize="11" fill="var(--sumi-2)">
+            （単位：{axis.unit}）
+          </text>
+
+          {/* Y 目盛（糸罫）＋数字 */}
+          {yTicks.map((v) => (
+            <g key={`y${v}`}>
+              <line
+                x1={PAD_L}
+                x2={W - PAD_R}
+                y1={y(v)}
+                y2={y(v)}
+                stroke="var(--keisen-ito)"
+                strokeWidth="1"
+                shapeRendering="crispEdges"
+              />
+              <text
+                x={PAD_L - 6}
+                y={y(v) + 4}
+                fontSize="11"
+                fill="var(--sumi-2)"
+                textAnchor="end"
+                className="suji"
+              >
+                {formatAxisTick(v, axis.divisor)}
+              </text>
+            </g>
+          ))}
+
+          {/* X 目盛 */}
+          {xTicks.map((k) => (
+            <g key={`x${k}`}>
+              <line
+                x1={x(k)}
+                x2={x(k)}
+                y1={PAD_T}
+                y2={H - PAD_B}
+                stroke="var(--keisen-ito)"
+                strokeWidth="1"
+                shapeRendering="crispEdges"
+              />
+              <text
+                x={x(k)}
+                y={H - PAD_B + 16}
+                fontSize="11"
+                fill="var(--sumi-2)"
+                textAnchor="middle"
+                className="suji"
+              >
+                {k}
+              </text>
+            </g>
+          ))}
+          <text
+            x={W - PAD_R}
+            y={H - PAD_B + 30}
+            fontSize="11"
+            fill="var(--sumi-2)"
+            textAnchor="end"
+          >
+            部
+          </text>
+
+          {/* ゼロ線 — 盤面で最も強い線 */}
+          <line
+            x1={PAD_L}
+            x2={W - PAD_R}
+            y1={y0}
+            y2={y0}
+            stroke="var(--sumi)"
+            strokeWidth="2"
+            shapeRendering="crispEdges"
+          />
+
+          {/* 系列線（主 3px・他 2px、色×線種の二重符号） */}
+          {ready &&
+            [...series]
+              .sort(
+                (a, b) => (a.id === mainId ? 1 : 0) - (b.id === mainId ? 1 : 0),
+              )
+              .map((s) => (
+                <path
+                  key={s.id}
+                  className="senzu-line"
+                  d={`M ${x(0)} ${y(-baseCost)} L ${x(xMax)} ${y(xMax * s.net - baseCost)}`}
+                  stroke={s.colorVar}
+                  strokeWidth={s.id === mainId ? 3 : 2}
+                  strokeDasharray={s.dash}
+                  strokeLinecap="butt"
+                />
+              ))}
+
+          {/* 損益分岐点: 朱の合印（白抜き丸）＋X軸への朱破線＋札 */}
+          {bex !== null && (
+            <g>
+              <line
+                x1={bex}
+                x2={bex}
+                y1={y0}
+                y2={H - PAD_B}
+                stroke="var(--shu-hade)"
+                strokeWidth="1"
+                strokeDasharray="4 3"
+              />
+              <circle
+                cx={bex}
+                cy={y0}
+                r="4.5"
+                fill="var(--kami-2)"
+                stroke="var(--shu-hade)"
+                strokeWidth="2"
+              />
+              {breakEvenMain !== null && (
+                <g>
+                  <rect
+                    x={Math.min(W - PAD_R - 96, Math.max(PAD_L, bex - 48))}
+                    y={H - PAD_B - 26}
+                    width="96"
+                    height="20"
+                    fill="var(--kami-2)"
+                    stroke="var(--shu)"
+                    strokeWidth="1"
+                  />
+                  <text
+                    x={Math.min(W - PAD_R - 96, Math.max(PAD_L, bex - 48)) + 48}
+                    y={H - PAD_B - 12}
+                    fontSize="12"
+                    fill="var(--shu)"
+                    textAnchor="middle"
+                    className="suji"
+                  >
+                    分岐 {breakEvenMain}部
+                  </text>
+                </g>
+              )}
+            </g>
+          )}
+
+          {/* 完売点: 墨の菱形＋札 */}
+          {ready && main !== null && (
+            <g>
+              <rect
+                x={x(xMax) - 3}
+                y={y(mainEndV) - 3}
+                width="6"
+                height="6"
+                fill="var(--sumi)"
+                transform={`rotate(45 ${x(xMax)} ${y(mainEndV)})`}
+              />
+              <rect
+                x={W - PAD_R - 88}
+                y={Math.max(PAD_T + 2, y(mainEndV) - 30)}
+                width="86"
+                height="20"
+                fill="var(--kami-2)"
+                stroke="var(--sumi)"
+                strokeWidth="1"
+              />
+              <text
+                x={W - PAD_R - 45}
+                y={Math.max(PAD_T + 2, y(mainEndV) - 30) + 14}
+                fontSize="12"
+                fill="var(--sumi)"
+                textAnchor="middle"
+                className="suji"
+              >
+                完売 {xMax}部
+              </text>
+            </g>
+          )}
+
+          {/* 読取罫＋交点（25部刻みスナップ・ピン留め対応） */}
+          {yomiK !== null && ready && (
+            <g>
+              <line
+                x1={x(yomiK)}
+                x2={x(yomiK)}
+                y1={PAD_T}
+                y2={H - PAD_B}
+                stroke="var(--keisen-waku)"
+                strokeWidth="1"
+              />
+              {series.map((s) => (
+                <circle
+                  key={s.id}
+                  cx={x(yomiK)}
+                  cy={y(yomiK * s.net - baseCost)}
+                  r="3.5"
+                  fill={s.colorVar}
+                />
+              ))}
+              {pinK !== null && (
+                <circle
+                  cx={x(yomiK)}
+                  cy={H - PAD_B}
+                  r="3"
+                  fill="var(--keisen-waku)"
+                />
+              )}
+            </g>
+          )}
+
+          {/* ポインタ捕捉レイヤ（44px 相当のスナップ幅・盤面全域） */}
+          {ready && (
+            <rect
+              x={PAD_L}
+              y={PAD_T}
+              width={PLOT_W}
+              height={PLOT_H}
+              fill="transparent"
+              onPointerMove={handleMove}
+              onPointerDown={handleDown}
+              onPointerLeave={handleLeave}
+            />
+          )}
+        </svg>
+
+        {/* 読取札（desktop: 盤面右上固定。カーソル追従させない） */}
+        {yomiK !== null && ready && (
+          <div className="yomitori-fuda suji" aria-hidden="true">
+            <div className="yomi-kashira">
+              {yomiK}部 の損益{pinK !== null ? "（留）" : ""}
+            </div>
+            {yomiRows.map((r) => (
+              <div key={r.id} className="yomi-gyo">
+                <span className="yomi-na">{r.name}</span>
+                <span className={r.v < 0 ? "akaji-ji" : ""}>
+                  {r.chobo.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {children}
       </div>
 
-      {/* タッチ用の固定読み出し行（指で隠れない位置に表示） */}
-      <div className="chart-readout tabular" aria-live="off">
-        {hover !== null && ready ? (
+      {/* 読取帯（mobile: 盤面直下・指の遮蔽回避） */}
+      <div className="yomitori-obi suji">
+        {yomiK !== null && ready ? (
           <>
-            <span>{hover.k}部頒布時</span>
-            {tipRows.map((r) => (
+            <span>
+              {yomiK}部{pinK !== null ? "（留）" : ""}
+            </span>
+            {yomiRows.map((r) => (
               <span key={r.id}>
-                {r.name}: {r.value}
+                {r.name} {r.chobo.text}
               </span>
             ))}
           </>
         ) : (
-          <span>
-            {ready ? "グラフに触れると部数ごとの損益を確認できます" : ""}
+          <span className="sai">
+            {ready
+              ? "盤面に触れると25部刻みで読み取れます（タップで留め置き）"
+              : ""}
           </span>
         )}
       </div>
+
+      {/* 読み上げ（読取値の変化を通知） */}
+      <span className="sr-only" aria-live="polite">
+        {yomiAria}
+      </span>
     </>
   );
 }

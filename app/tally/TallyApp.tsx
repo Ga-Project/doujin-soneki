@@ -1,15 +1,16 @@
 "use client";
 
-// 頒布タリー（/tally）— 即売会当日の相棒。
-// 設計原則: 片手・親指・ノールック寄り。「一瞬で読めて、確実に押せて、間違えても戻せる」。
-// 破壊操作（削除・全リセット）は編集パネルに隔離し confirm 必須。カウント動線には置かない。
+// 頒布タリー（/tally）— 「朱墨の帳場」の押印面。
+// 設計原則: 屋内の暗めの会場・立ちっぱなし・片手・視線は目の前のお客さん。
+// ＋1 は全幅の「角印」（判を捺す行為）として下部に固定し、それ以外の操作は
+// すべて勘定面（上半分）に隔離。角印との間に24px以上の不感帯を置く。
+// 確認ダイアログでなく Undo で冗長性を確保（連打はそのまま加算）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   applyTallyEvent,
-  formatSignedYen,
-  formatYen,
+  formatChobo,
   remainingCopies,
   undoTally,
   type TallyEvent,
@@ -24,7 +25,6 @@ import {
   storageAvailable,
   type SimMoneyResult,
 } from "../storage";
-import { BrandMark } from "../chrome";
 
 const HISTORY_LIMIT = 300;
 
@@ -42,13 +42,12 @@ type NavigatorWithWakeLock = Navigator & {
   wakeLock?: { request: (type: "screen") => Promise<WakeLockSentinelLike> };
 };
 
-/** カウント修正の入力（blur/Enter で確定し、Undo 可能な set イベントとして積む）。 */
+/** カウント修正の直接入力（blur/Enter で確定し、Undo 可能な set イベントとして積む）。 */
 function CountFix({
   id,
   item,
   onCommit,
 }: {
-  /** 対応する label の htmlFor と紐づける input id。 */
   id: string;
   item: TallyItem;
   onCommit: (to: number) => void;
@@ -72,7 +71,7 @@ function CountFix({
       inputMode="numeric"
       min="0"
       step="1"
-      className="tabular"
+      className="kinyu-input suji"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
@@ -102,19 +101,27 @@ export function TallyApp() {
   const [restored, setRestored] = useState(false);
   const [restoreDismissed, setRestoreDismissed] = useState(false);
   const [online, setOnline] = useState(true);
-  const [editMode, setEditMode] = useState(false);
-  const [popKey, setPopKey] = useState(0);
+  const [seiriOpen, setSeiriOpen] = useState(false);
+  const [suteppaOpen, setSuteppaOpen] = useState(false);
+  const [tsuikaOpen, setTsuikaOpen] = useState(false);
+  const [modoshita, setModoshita] = useState(0); // 「戻しました」表示（0=非表示）
+  const [kingakuNote, setKingakuNote] = useState(false); // 金額ON初回の注意書き
   const [simMoney, setSimMoney] = useState<SimMoneyResult>({
     ok: false,
     reason: "not-configured",
   });
+
+  // ＋追加のインライン3欄（別画面に飛ばない）
+  const [newName, setNewName] = useState("");
+  const [newPrice, setNewPrice] = useState("");
+  const [newCarry, setNewCarry] = useState("");
 
   const [wakeSupported, setWakeSupported] = useState(false);
   const [keepAwake, setKeepAwake] = useState(false);
   const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
   const chipsRef = useRef<HTMLDivElement | null>(null);
 
-  // アクティブな頒布物のチップが横スクロール外にあれば見える位置へ寄せる
+  // アクティブな頒布物のツメが横スクロール外にあれば見える位置へ寄せる
   useEffect(() => {
     const chip = chipsRef.current?.querySelector('[aria-pressed="true"]');
     chip?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -156,7 +163,7 @@ export function TallyApp() {
     });
   }, [data, activeId, showMoney, loaded, storageOk]);
 
-  // --- オフライン監視 --------------------------------------------------------
+  // --- オフライン監視（エラー扱いしない: 電波がなくて当たり前の道具） --------
 
   useEffect(() => {
     const on = (): void => setOnline(true);
@@ -212,27 +219,45 @@ export function TallyApp() {
   const increment = (): void => {
     if (active === null) return;
     pushEvent({ type: "inc", itemId: active.id });
-    setPopKey((k) => k + 1);
-    if ("vibrate" in navigator) {
-      navigator.vibrate(10);
-    }
+    // 捺印フィードバック: カウントは即時更新・振動は存在チェックのみの漸進的強化
+    navigator.vibrate?.(10);
   };
 
   const undo = (): void => {
     setData((prev) => undoTally(prev.items, prev.history));
+    setModoshita((k) => k + 1);
   };
+  // 「戻しました」を2秒で消す
+  useEffect(() => {
+    if (modoshita === 0) return;
+    const t = setTimeout(() => setModoshita(0), 2000);
+    return () => clearTimeout(t);
+  }, [modoshita]);
 
-  const addItem = (): void => {
+  /** ツメ帯のインライン3欄から頒布物を記帳する。 */
+  const addItemFromForm = (): void => {
+    const name = newName.trim() === "" ? `頒布物${items.length + 1}` : newName;
+    const priceN = Number(newPrice);
+    const carryN = Number(newCarry);
     const item: TallyItem = {
       id: newId(),
-      name: `頒布物${items.length + 1}`,
-      carryIn: null,
+      name,
+      carryIn:
+        newCarry.trim() !== "" && Number.isInteger(carryN) && carryN >= 0
+          ? carryN
+          : null,
       count: 0,
-      price: null,
+      price:
+        newPrice.trim() !== "" && Number.isFinite(priceN) && priceN >= 0
+          ? priceN
+          : null,
     };
     setData((prev) => ({ ...prev, items: [...prev.items, item] }));
     setActiveId(item.id);
-    setEditMode(true);
+    setNewName("");
+    setNewPrice("");
+    setNewCarry("");
+    setTsuikaOpen(false);
   };
 
   const updateItem = (id: string, patch: Partial<TallyItem>): void => {
@@ -245,9 +270,7 @@ export function TallyApp() {
   const deleteItem = (id: string): void => {
     const target = items.find((i) => i.id === id);
     if (target === undefined) return;
-    if (
-      !window.confirm(`「${target.name}」を削除しますか？カウントも消えます。`)
-    )
+    if (!window.confirm(`「${target.name}」を削除しますか？記帳も消えます。`))
       return;
     const next = items.filter((i) => i.id !== id);
     setData((prev) => ({
@@ -262,7 +285,7 @@ export function TallyApp() {
   const resetAll = (): void => {
     if (
       !window.confirm(
-        "すべての頒布物のカウントを 0 に戻しますか？この操作は取り消せません。",
+        "すべての頒布物の記帳を 0 に戻しますか？この操作は取り消せません。",
       )
     ) {
       return;
@@ -274,7 +297,7 @@ export function TallyApp() {
   };
 
   const restartAll = (): void => {
-    if (!window.confirm("前回の記録を消して最初からやり直しますか？")) return;
+    if (!window.confirm("前回の記帳を消して最初からやり直しますか？")) return;
     clearTally();
     setData({ items: [], history: [] });
     setActiveId(null);
@@ -292,43 +315,49 @@ export function TallyApp() {
     remaining === 0;
   const totalCount = items.reduce((acc, i) => acc + i.count, 0);
 
-  // シミュレータの保存入力に不正がある場合は、その頒価・費用を一切使わない
-  // （黙って 0 扱いで過大/過小な損益を出さない。修正を促す明示状態にする）
+  // シミュレータの保存入力に不正がある場合はその頒価・費用を一切使わない
   const simInvalid = !simMoney.ok && simMoney.reason === "invalid";
   const simPrice = simMoney.ok ? simMoney.price : null;
 
-  /** 頒布物の実効頒価（頒布物ごとの設定 → シミュレータの頒価の順でフォールバック）。 */
+  /** 頒布物の実効頒価（頒布物ごとの設定 → 帳面（シミュレータ）の頒価の順）。 */
   const unitPriceOf = (item: TallyItem): number | null =>
     item.price ?? simPrice;
   const activePrice = active === null ? null : unitPriceOf(active);
-  // 全頒布物の頒価が確定しているときだけ全体の手取り・損益を出す（誤解を招く合計を出さない）
   const allPriced =
     items.length > 0 && items.every((i) => unitPriceOf(i) !== null);
   const totalRevenue = allPriced
-    ? // allPriced 分岐内なので unitPriceOf は non-null（?? 0 は型絞り込みのためで到達しない）
+    ? // allPriced 分岐内なので unitPriceOf は non-null（?? 0 は型絞り込み用で到達しない）
       items.reduce((acc, i) => acc + i.count * (unitPriceOf(i) ?? 0), 0)
     : null;
 
   return (
-    <div className="tally-page">
-      <a className="skip-link" href="#tally-main">
-        本文へスキップ
+    <div className="tally-men">
+      <a className="tobira" href="#tally-honmon">
+        本文へ飛ぶ
       </a>
 
-      <header className="tally-header">
-        <Link className="brand" href="/">
-          <span className="brand-mark" aria-hidden="true">
-            <BrandMark size={11} />
-          </span>
-          <span>同人ソンエキ</span>
+      {/* 帳頭 */}
+      <header className="tally-gashira">
+        <Link className="modoru" href="/">
+          ← 帳面へ
         </Link>
-        <Link className="to-sim" href="/">
-          計算機へ
-        </Link>
+        <span className="dai">当日の記帳</span>
+        <label className="kingaku-switch">
+          金額
+          <input
+            type="checkbox"
+            checked={showMoney}
+            onChange={(e) => {
+              setShowMoney(e.target.checked);
+              if (e.target.checked) setKingakuNote(true);
+            }}
+          />
+          {showMoney && <span aria-hidden="true">入</span>}
+        </label>
       </header>
 
       <main
-        id="tally-main"
+        id="tally-honmon"
         tabIndex={-1}
         style={{
           outline: "none",
@@ -341,104 +370,248 @@ export function TallyApp() {
         <h1 className="sr-only">即売会頒布カウンター</h1>
 
         {restored && !restoreDismissed && (
-          <div
-            className="alert restore-bar"
-            role="status"
-            style={{ margin: "var(--sp-3) var(--sp-4) 0" }}
-          >
-            <span>前回の記録を復元しました</span>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={restartAll}
-            >
-              最初からやり直す
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost dismiss"
-              aria-label="この通知を閉じる"
-              onClick={() => setRestoreDismissed(true)}
-            >
-              ×
-            </button>
+          <div className="fukugen" role="status">
+            <span>前回の記帳を開きました</span>
+            <span className="migiyose">
+              <button
+                type="button"
+                className="bt bt-sub bt-sm"
+                onClick={restartAll}
+              >
+                白紙に戻す
+              </button>
+              <button
+                type="button"
+                className="bt-kesu"
+                aria-label="この知らせを閉じる"
+                onClick={() => setRestoreDismissed(true)}
+              >
+                ×
+              </button>
+            </span>
           </div>
         )}
         {loaded && !storageOk && (
-          <div
-            className="alert alert-warn"
-            role="status"
-            style={{ margin: "var(--sp-3) var(--sp-4) 0" }}
-          >
-            この環境ではデータを保存できません。ページを閉じると記録が消えます
+          <div className="fusen fusen-shu" role="status">
+            ※ この環境では保存できません。ページを閉じると記帳が消えます。
           </div>
         )}
 
-        {/* 頒布物チップ列（+1 ゾーンから最も遠い上端） */}
+        {/* ツメ帯（頒布物切替・＋追加のインライン展開） */}
         {items.length > 0 && (
           <div
-            className="tally-chips"
+            className="tsume-tai"
             role="group"
             aria-label="頒布物の切替"
             ref={chipsRef}
           >
-            {items.map((i) => (
-              <button
-                key={i.id}
-                type="button"
-                className="tchip"
-                aria-pressed={i.id === activeId}
-                onClick={() => setActiveId(i.id)}
-              >
-                <span>{i.name}</span>
-                <span className="tchip-count tabular">{i.count}</span>
-              </button>
-            ))}
+            {items.map((i) => {
+              const zan = remainingCopies(i);
+              const iSold = i.carryIn !== null && i.carryIn > 0 && zan === 0;
+              return (
+                <button
+                  key={i.id}
+                  type="button"
+                  className="tsume"
+                  aria-pressed={i.id === activeId}
+                  onClick={() => setActiveId(i.id)}
+                >
+                  <span>{i.name}</span>
+                  {iSold ? (
+                    <span className="fuda">完売</span>
+                  ) : (
+                    zan !== null && <span className="suji">残{zan}</span>
+                  )}
+                  {zan === null && <span className="suji">{i.count}</span>}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className="tsume"
+              onClick={() => setTsuikaOpen((v) => !v)}
+              aria-expanded={tsuikaOpen}
+            >
+              ＋追加
+            </button>
           </div>
         )}
 
-        {/* カウントステージ / 編集パネル */}
-        {items.length === 0 && loaded ? (
-          <div className="tally-stage">
-            <div className="empty-state">
-              <span className="card-icon" aria-hidden="true">
-                ⊕
-              </span>
-              <h3>頒布物を登録して、当日のカウントを始めましょう</h3>
+        {tsuikaOpen && (
+          <div className="tsuika-ran">
+            <div className="kinyu">
+              <label className="ran" htmlFor="new-name">
+                頒布物の名前
+              </label>
+              <input
+                id="new-name"
+                type="text"
+                className="kinyu-input"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder={`頒布物${items.length + 1}`}
+              />
+            </div>
+            <div className="narabi">
+              <div className="kinyu">
+                <label className="ran" htmlFor="new-price">
+                  頒価（円・任意）
+                </label>
+                <input
+                  id="new-price"
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  className="kinyu-input suji"
+                  value={newPrice}
+                  onChange={(e) => setNewPrice(e.target.value)}
+                  placeholder={simPrice === null ? "" : String(simPrice)}
+                />
+              </div>
+              <div className="kinyu">
+                <label className="ran" htmlFor="new-carry">
+                  搬入数（部・任意）
+                </label>
+                <input
+                  id="new-carry"
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  step="1"
+                  className="kinyu-input suji"
+                  value={newCarry}
+                  onChange={(e) => setNewCarry(e.target.value)}
+                />
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "var(--ma-2)" }}>
               <button
                 type="button"
-                className="btn btn-primary"
-                onClick={addItem}
+                className="bt bt-main"
+                onClick={addItemFromForm}
               >
-                頒布物を追加
+                記帳する
+              </button>
+              <button
+                type="button"
+                className="bt bt-sub"
+                onClick={() => setTsuikaOpen(false)}
+              >
+                やめる
               </button>
             </div>
           </div>
-        ) : editMode ? (
-          <div className="tally-stage">
-            <div className="tally-edit">
-              <h2>頒布物を編集</h2>
+        )}
+
+        {/* 勘定面（上半分・＋1以外の操作はここに隔離） */}
+        {items.length === 0 && loaded ? (
+          <div className="kanjo-men">
+            <p className="sai">頒布物を記帳して、当日のカウントを始めます。</p>
+            <button
+              type="button"
+              className="bt bt-main"
+              onClick={() => setTsuikaOpen(true)}
+              style={{ marginTop: "var(--ma-2)" }}
+            >
+              頒布物を追加
+            </button>
+            {tsuikaOpen && (
+              <div className="tsuika-ran" style={{ marginTop: "var(--ma-2)" }}>
+                <div className="kinyu">
+                  <label className="ran" htmlFor="new-name-0">
+                    頒布物の名前
+                  </label>
+                  <input
+                    id="new-name-0"
+                    type="text"
+                    className="kinyu-input"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="頒布物1"
+                  />
+                </div>
+                <div className="narabi">
+                  <div className="kinyu">
+                    <label className="ran" htmlFor="new-price-0">
+                      頒価（円・任意）
+                    </label>
+                    <input
+                      id="new-price-0"
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      className="kinyu-input suji"
+                      value={newPrice}
+                      onChange={(e) => setNewPrice(e.target.value)}
+                      placeholder={simPrice === null ? "" : String(simPrice)}
+                    />
+                  </div>
+                  <div className="kinyu">
+                    <label className="ran" htmlFor="new-carry-0">
+                      搬入数（部・任意）
+                    </label>
+                    <input
+                      id="new-carry-0"
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      step="1"
+                      className="kinyu-input suji"
+                      value={newCarry}
+                      onChange={(e) => setNewCarry(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "var(--ma-2)" }}>
+                  <button
+                    type="button"
+                    className="bt bt-main"
+                    onClick={addItemFromForm}
+                  >
+                    記帳する
+                  </button>
+                  <button
+                    type="button"
+                    className="bt bt-sub"
+                    onClick={() => setTsuikaOpen(false)}
+                  >
+                    やめる
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : seiriOpen ? (
+          /* 帳面の整理（管理系操作の隔離パネル） */
+          <div className="kanjo-men">
+            <div className="seiri">
+              <h2>帳面の整理</h2>
               {items.map((i) => (
-                <div key={i.id} className="tally-edit-row">
-                  <div className="field field-name">
-                    <label htmlFor={`name-${i.id}`}>名前</label>
+                <div key={i.id} className="seiri-gyo">
+                  <div className="kinyu kinyu-na">
+                    <label className="ran" htmlFor={`name-${i.id}`}>
+                      名前
+                    </label>
                     <input
                       id={`name-${i.id}`}
                       type="text"
+                      className="kinyu-input"
                       value={i.name}
                       onChange={(e) =>
                         updateItem(i.id, { name: e.target.value })
                       }
                     />
                   </div>
-                  <div className="field field-num">
-                    <label htmlFor={`price-${i.id}`}>頒価（円）</label>
+                  <div className="kinyu kinyu-su">
+                    <label className="ran" htmlFor={`price-${i.id}`}>
+                      頒価（円）
+                    </label>
                     <input
                       id={`price-${i.id}`}
                       type="number"
                       inputMode="numeric"
                       min="0"
-                      className="tabular"
+                      className="kinyu-input suji"
                       placeholder={
                         simPrice === null ? "未設定" : String(simPrice)
                       }
@@ -459,15 +632,17 @@ export function TallyApp() {
                       }}
                     />
                   </div>
-                  <div className="field field-num">
-                    <label htmlFor={`carry-${i.id}`}>搬入数</label>
+                  <div className="kinyu kinyu-su">
+                    <label className="ran" htmlFor={`carry-${i.id}`}>
+                      搬入数（部）
+                    </label>
                     <input
                       id={`carry-${i.id}`}
                       type="number"
                       inputMode="numeric"
                       min="0"
                       step="1"
-                      className="tabular"
+                      className="kinyu-input suji"
                       value={i.carryIn === null ? "" : String(i.carryIn)}
                       onChange={(e) => {
                         const raw = e.target.value;
@@ -481,8 +656,10 @@ export function TallyApp() {
                       }}
                     />
                   </div>
-                  <div className="field field-num">
-                    <label htmlFor={`fix-${i.id}`}>カウント修正</label>
+                  <div className="kinyu kinyu-su">
+                    <label className="ran" htmlFor={`fix-${i.id}`}>
+                      記帳の修正
+                    </label>
                     <CountFix
                       id={`fix-${i.id}`}
                       item={i}
@@ -498,7 +675,7 @@ export function TallyApp() {
                   </div>
                   <button
                     type="button"
-                    className="btn-icon"
+                    className="bt-kesu"
                     onClick={() => deleteItem(i.id)}
                     aria-label={`${i.name}を削除`}
                   >
@@ -506,36 +683,42 @@ export function TallyApp() {
                   </button>
                 </div>
               ))}
-              <p className="field-hint">
-                頒価は空欄のままなら計算機（シミュレータ）の頒価を使います
-              </p>
-              <div className="tally-edit-actions">
+              <div
+                style={{
+                  display: "flex",
+                  gap: "var(--ma-2)",
+                  flexWrap: "wrap",
+                }}
+              >
                 <button
                   type="button"
-                  className="btn btn-secondary"
-                  onClick={addItem}
+                  className="bt bt-sub bt-sm"
+                  onClick={() => {
+                    setSeiriOpen(false);
+                    setTsuikaOpen(true);
+                  }}
                 >
                   ＋ 頒布物を追加
                 </button>
                 <button
                   type="button"
-                  className="link-danger"
+                  className="shu-moji-bt"
                   onClick={resetAll}
                 >
-                  全リセット（カウントを 0 に）
+                  全リセット（記帳を0に）
                 </button>
               </div>
-              <div className="tally-settings">
-                <label className="check-label">
-                  <input
-                    type="checkbox"
-                    checked={showMoney}
-                    onChange={(e) => setShowMoney(e.target.checked)}
-                  />
-                  金額を表示（手取り・現在損益）
-                </label>
+              <div
+                style={{
+                  borderTop: "var(--rule-hoso)",
+                  paddingTop: "var(--ma-2)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "var(--ma-05)",
+                }}
+              >
                 {wakeSupported && (
-                  <label className="check-label">
+                  <label className="sumi-check">
                     <input
                       type="checkbox"
                       checked={keepAwake}
@@ -553,139 +736,230 @@ export function TallyApp() {
               <div>
                 <button
                   type="button"
-                  className="btn btn-primary"
-                  onClick={() => setEditMode(false)}
+                  className="bt bt-main"
+                  onClick={() => setSeiriOpen(false)}
                 >
-                  編集を終える
+                  整理を終える
                 </button>
               </div>
             </div>
           </div>
         ) : (
-          <div className="tally-stage">
+          <div className="kanjo-men">
             {active !== null && (
               <>
-                <p className="tally-item-name">{active.name}</p>
-                {active.carryIn !== null && remaining !== null && (
-                  <div className="tally-remaining">
-                    {soldOut ? (
-                      <span className="badge badge-ok">完売！</span>
-                    ) : (
-                      <span className="tabular">残り {remaining}部</span>
-                    )}
-                    <div className="tally-progress" aria-hidden="true">
-                      <span
-                        style={{
-                          width: `${Math.min(100, (active.count / Math.max(1, active.carryIn)) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-                <div className="tally-count-wrap">
-                  <div
-                    key={popKey}
-                    className={`tally-count tabular${popKey > 0 ? " pop" : ""}`}
-                  >
-                    {active.count}
-                  </div>
-                  {popKey > 0 && (
-                    <span
-                      key={`t${popKey}`}
-                      className="tap-toast tabular"
-                      aria-hidden="true"
-                    >
-                      ＋1
-                    </span>
-                  )}
-                </div>
-                <span className="sr-only" aria-live="polite" aria-atomic="true">
-                  {active.name} {active.count}部
-                </span>
                 {soldOut && (
-                  <p className="tally-money">完売おめでとうございます！</p>
+                  <div className="kanbai-in" aria-hidden="true">
+                    完売御礼
+                  </div>
                 )}
-                {showMoney &&
-                  (simInvalid ? (
-                    <p className="tally-money">
-                      計算機（シミュレータ）の入力にエラーがあるため、損益を計算できません。計算機で修正してください
-                    </p>
-                  ) : (
-                    <p className="tally-money tabular">
-                      {activePrice !== null ? (
-                        <>
-                          小計 {formatYen(active.count * activePrice)}（
-                          {active.count}部 × ¥
-                          {activePrice.toLocaleString("ja-JP")}）
-                        </>
-                      ) : (
-                        "この頒布物の頒価が未設定です。編集画面か計算機で頒価を入れると小計が出ます"
-                      )}
-                      {totalRevenue !== null && (
-                        <>
-                          <br />
-                          全体 実売 {totalCount}部 ・ 手取り{" "}
-                          {formatYen(totalRevenue)}
-                          {simMoney.ok && (
-                            <>
-                              {" ・ "}現在損益{" "}
-                              {formatSignedYen(
-                                totalRevenue - simMoney.baseCost,
-                              )}
-                              （計算機の費用にもとづく概算）
-                            </>
-                          )}
-                        </>
-                      )}
-                      {totalRevenue === null && items.length > 1 && (
-                        <>
-                          <br />
-                          頒価が未設定の頒布物があるため、全体の手取り・損益は表示していません
-                        </>
-                      )}
-                    </p>
-                  ))}
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => setEditMode(true)}
-                >
-                  頒布物を編集
-                </button>
+                <div className="tally-kazoe">
+                  <span className="mae">頒布</span>
+                  <span className="kazu">{active.count}</span>
+                  <span className="mae">部</span>
+                </div>
+                {active.carryIn !== null && remaining !== null && (
+                  <p className="tally-zan">
+                    {soldOut ? (
+                      <span>完売御礼。おつかれさまでした</span>
+                    ) : (
+                      <>
+                        残{" "}
+                        <span className={remaining <= 10 ? "wazuka" : ""}>
+                          {remaining}
+                        </span>{" "}
+                        部 ／ 搬入{active.carryIn}
+                        {remaining <= 10 && remaining > 0 && (
+                          <span className="wazuka sai"> 残りわずか</span>
+                        )}
+                      </>
+                    )}
+                  </p>
+                )}
+                <span className="sr-only" aria-live="polite" aria-atomic="true">
+                  {soldOut
+                    ? `${active.name}、完売です`
+                    : `${active.count}部目。${remaining !== null ? `残り${remaining}部` : active.name}`}
+                </span>
+                {modoshita > 0 && (
+                  <p className="sai" role="status">
+                    戻しました
+                  </p>
+                )}
+                {showMoney && (
+                  <div className="tally-shokei sai">
+                    {simInvalid ? (
+                      <p>
+                        帳面（計算機）の入力に訂正があるため、損益を出せません。帳面で直してください
+                      </p>
+                    ) : (
+                      <>
+                        {activePrice !== null ? (
+                          <p>
+                            小計{" "}
+                            {(active.count * activePrice).toLocaleString(
+                              "ja-JP",
+                            )}
+                            円（{active.count}部 ×{" "}
+                            {activePrice.toLocaleString("ja-JP")}円）
+                          </p>
+                        ) : (
+                          <p>
+                            この頒布物の頒価が未設定です。整理か帳面で頒価を入れると小計が出ます
+                          </p>
+                        )}
+                        {totalRevenue !== null && (
+                          <p>
+                            全体 実売{totalCount}部・手取り{" "}
+                            {totalRevenue.toLocaleString("ja-JP")}円
+                            {simMoney.ok && (
+                              <>
+                                ・現在損益{" "}
+                                <span
+                                  className={
+                                    totalRevenue - simMoney.baseCost < 0
+                                      ? "wazuka"
+                                      : ""
+                                  }
+                                  aria-label={
+                                    formatChobo(
+                                      totalRevenue - simMoney.baseCost,
+                                    ).aria
+                                  }
+                                >
+                                  {
+                                    formatChobo(
+                                      totalRevenue - simMoney.baseCost,
+                                    ).text
+                                  }
+                                  円
+                                </span>
+                              </>
+                            )}
+                          </p>
+                        )}
+                        {totalRevenue === null && items.length > 1 && (
+                          <p>
+                            頒価が未設定の頒布物があるため、全体の損益は出していません
+                          </p>
+                        )}
+                      </>
+                    )}
+                    {kingakuNote && (
+                      <p>
+                        ※ 金額は既定で伏せています —
+                        ブースの画面は買い手からも見えるため
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {suteppaOpen ? (
+                  <div className="suteppa">
+                    <button
+                      type="button"
+                      className="bt bt-sub"
+                      disabled={active.count <= 0}
+                      onClick={() =>
+                        pushEvent({
+                          type: "set",
+                          itemId: active.id,
+                          from: active.count,
+                          to: active.count - 1,
+                        })
+                      }
+                      aria-label="1減らす"
+                    >
+                      −
+                    </button>
+                    <span className="ima suji">{active.count}</span>
+                    <button
+                      type="button"
+                      className="bt bt-sub"
+                      onClick={() =>
+                        pushEvent({ type: "inc", itemId: active.id })
+                      }
+                      aria-label="1増やす"
+                    >
+                      ＋
+                    </button>
+                    <button
+                      type="button"
+                      className="bt bt-sub bt-sm"
+                      onClick={() => setSuteppaOpen(false)}
+                    >
+                      閉じる
+                    </button>
+                  </div>
+                ) : null}
+
+                {/* 勘定面の最下行: 修正系（角印から不感帯を挟んで隔離） */}
+                <div className="tally-sosa">
+                  <button
+                    type="button"
+                    className="bt bt-sub bt-sm"
+                    onClick={() => setSuteppaOpen((v) => !v)}
+                  >
+                    数を修正
+                  </button>
+                  <button
+                    type="button"
+                    className="bt bt-sub"
+                    onClick={undo}
+                    disabled={history.length === 0}
+                  >
+                    ひとつ戻す
+                  </button>
+                  <button
+                    type="button"
+                    className="bt bt-sub bt-sm"
+                    onClick={() => setSeiriOpen(true)}
+                  >
+                    帳面の整理
+                  </button>
+                </div>
               </>
             )}
           </div>
         )}
 
-        {/* アクションゾーン（下端固定・thumb zone） */}
-        {items.length > 0 && !editMode && (
-          <div className="tally-actions">
+        {/* 押印面（下部・全幅角印。上との間に不感帯24px以上） */}
+        {items.length > 0 && !seiriOpen && (
+          <div className="oshiin-men">
             <button
               type="button"
-              className="btn btn-secondary btn-undo"
-              onClick={undo}
-              disabled={history.length === 0}
-            >
-              ひとつ戻す
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary btn-plus"
+              className="oshiin"
               onClick={increment}
-              disabled={active === null}
+              disabled={active === null || soldOut}
             >
-              ＋1 頒布
+              {soldOut ? (
+                <span className="osu-ji">完売</span>
+              ) : (
+                <>
+                  <span className="osu-kazu">＋１</span>
+                  <span className="osu-ji">頒布</span>
+                </>
+              )}
             </button>
+            {soldOut && (
+              <p
+                className="sai"
+                role="status"
+                style={{ textAlign: "center", marginTop: "var(--ma-1)" }}
+              >
+                完売済みです。戻す場合は［ひとつ戻す］
+              </p>
+            )}
           </div>
         )}
 
-        {/* 保存インジケータ */}
-        <p className="tally-save">
+        {/* 状態行 */}
+        <p className={`tally-jotai${online ? "" : " is-offline"}`}>
           {!storageOk
-            ? "この環境では保存されません — 記録はページを閉じるまで有効です"
+            ? "この環境では保存されません — 記帳はページを閉じるまで有効"
             : online
-              ? "端末に自動保存 ✓・オフラインでも動きます"
-              : "オフライン中 — データは端末に保存されています"}
+              ? "記帳中・端末に保存済み"
+              : "オフライン記帳中・端末に保存済み"}
         </p>
       </main>
     </div>

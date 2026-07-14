@@ -1,8 +1,9 @@
 "use client";
 
-// 損益分岐シミュレータ（/ の主役）。
-// 状態はこのコンポーネントに集約し、計算は lib/soneki.ts の純関数へ委譲する。
-// 入力は即時反映（送信ボタンなし）・localStorage へ自動保存・復元。
+// 損益分岐シミュレータ — 「朱墨の帳場」の帳面本体。
+// 計算は lib/soneki.ts の純関数へ委譲し、このコンポーネントは状態と表示に徹する。
+// レイアウトは帳面グリッド（ツメ列 / 記入欄 / 集計欄）。入力は左、答えは右。
+// 入力エラー時も直前の有効な勘定尻・線図は捨てず、「検算中」札つきで淡く保持する。
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -10,7 +11,7 @@ import {
   allocationProfit,
   breakEvenCopies,
   breakEvenExact,
-  formatSignedYen,
+  formatChobo,
   MAX_COPIES,
   netPerCopy,
   normalizeTier,
@@ -38,7 +39,7 @@ import {
   type SavedTierRow,
   type SimSaved,
 } from "./storage";
-import { ProfitChart, type ChartSeries, type SeriesColor } from "./ProfitChart";
+import { ProfitChart, type ChartSeries, type LegendRow } from "./ProfitChart";
 
 // ---------------------------------------------------------------------------
 // 既定値・サンプル値
@@ -71,7 +72,7 @@ const DEFAULT_STATE: SimSaved = {
   isSample: false,
 };
 
-// サンプルは明示ボタン経由でのみ投入する（badge-warn「サンプル値」を伴う）
+// サンプルは明示ボタン経由でのみ投入する（「見本」朱印を伴う）
 const SAMPLE_STATE: SimSaved = {
   v: 1,
   price: "500",
@@ -115,18 +116,21 @@ function normalizeMain(s: SimSaved): SimSaved {
   return next === s.mainChannelId ? s : { ...s, mainChannelId: next };
 }
 
+// 系列の意匠（ブリーフ§4）: 会場=青墨実線 / 委託=藍破線・媚茶一点鎖線・桔梗点線。
+// 朱は系列に使わない（朱の予算制: 赤字・警告・分岐・印判の4用途限定）。
+const DIRECT_COLOR = {
+  colorClass: "iro-aozumi",
+  colorVar: "var(--aozumi)",
+  dash: undefined as string | undefined,
+};
 const CONSIGN_COLORS: readonly {
-  colorClass: SeriesColor;
+  colorClass: string;
   colorVar: string;
   dash: string;
 }[] = [
-  { colorClass: "series-c1", colorVar: "var(--chart-consign-1)", dash: "6 4" },
-  { colorClass: "series-c2", colorVar: "var(--chart-consign-2)", dash: "2 4" },
-  {
-    colorClass: "series-c3",
-    colorVar: "var(--chart-consign-3)",
-    dash: "10 3 2 3",
-  },
+  { colorClass: "iro-ai", colorVar: "var(--ai)", dash: "8 4" },
+  { colorClass: "iro-kobicha", colorVar: "var(--kobicha)", dash: "10 3 2 3" },
+  { colorClass: "iro-kikyo", colorVar: "var(--kikyo)", dash: "2 4" },
 ];
 const MAX_CONSIGN = CONSIGN_COLORS.length;
 
@@ -138,6 +142,25 @@ interface SeriesInfo extends ChartSeries {
   sellout: number;
 }
 
+/** 直前の有効な勘定（検算中の継続表示に使うスナップショット）。 */
+interface ViewSnap {
+  copies: number;
+  baseCost: number;
+  price: number;
+  seriesAll: SeriesInfo[];
+  mainSeries: SeriesInfo | null;
+  mainBreakEven: number | null;
+  mainBreakEvenExact: number | null;
+  mainSellout: number;
+  mainPerCopy: number | null;
+  neverProfits: boolean;
+  range: { sellout: number; at70: number } | null;
+  plans: { name: string; copies: number; ch: ChannelParams }[];
+  plannedTotal: number;
+  plannedBlocked: boolean;
+  allocation: number | null;
+}
+
 // ---------------------------------------------------------------------------
 
 export function Simulator() {
@@ -146,9 +169,13 @@ export function Simulator() {
   const [storageOk, setStorageOk] = useState(true);
   const [restored, setRestored] = useState(false);
   const [restoreDismissed, setRestoreDismissed] = useState(false);
-  // 「表で見る」は開いているときだけ表を組み立てる（閉じた details 内の無駄な再生成防止）
+  const [confirmHakushi, setConfirmHakushi] = useState(false);
+  // 「表で見る」は開いているときだけ表を組み立てる
   const [tableOpen, setTableOpen] = useState(false);
-  const chartBlockRef = useRef<HTMLDivElement | null>(null);
+  // 勘定尻バー: 線図が視界内にある間は退避（IntersectionObserver・漸進的強化）
+  const [barTaihi, setBarTaihi] = useState(false);
+  const senzuRef = useRef<HTMLDivElement | null>(null);
+  const shukeiRef = useRef<HTMLElement | null>(null);
 
   // 初回マウント時に前回値を復元（SSR とのハイドレーション不一致を避けるため effect で行う）
   useEffect(() => {
@@ -170,7 +197,18 @@ export function Simulator() {
     saveSim(state);
   }, [state, loaded, storageOk]);
 
-  /** ユーザー編集（サンプルバッジを外す + 主チャネル整合）。 */
+  // 線図が視界内なら勘定尻バーを退避（未対応環境ではバーが常時出るだけ）
+  useEffect(() => {
+    const el = senzuRef.current;
+    if (el === null || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(([entry]) => {
+      setBarTaihi(entry?.isIntersecting ?? false);
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  /** ユーザー編集（見本印を外す + 主チャネル整合）。 */
   const edit = (fn: (s: SimSaved) => SimSaved): void => {
     setState((s) => normalizeMain({ ...fn(s), isSample: false }));
   };
@@ -201,34 +239,31 @@ export function Simulator() {
     const seriesAll: SeriesInfo[] = [];
     const feeErrors: { id: string; msg: string }[] = [];
     for (const ch of state.channels) {
-      let color: { colorClass: SeriesColor; colorVar: string; dash?: string } =
-        {
-          colorClass: "series-direct",
-          colorVar: "var(--chart-direct)",
-        };
+      let color: { colorClass: string; colorVar: string; dash?: string } =
+        DIRECT_COLOR;
       if (ch.kind === "consign") {
         const c = CONSIGN_COLORS[consignIndex];
         consignIndex += 1;
         if (c === undefined) {
-          // 4 行目以降の委託（旧データ等）: 編集はできるが計算対象外（カードに明示）
+          // 4 行目以降の委託（旧データ等）: 編集はできるが計算対象外（欄に明示）
           overLimitIds.add(ch.id);
           continue;
         }
         color = c;
       }
       // 手数料率・定額手数料を同じ検証経路で解決する。不正入力は黙って 0 に
-      // 置き換えず、エラーを出してチャネルごと計算/グラフから除外する。
+      // 置き換えず、エラーを出してチャネルごと計算/線図から除外する。
       const parsed = parseChannelParams(ch.kind, ch.fee, ch.perItem);
       if (!parsed.ok) {
         if (parsed.reason === "fee-invalid") {
           feeErrors.push({
             id: `fee-${ch.id}`,
-            msg: `「${ch.name}」: 手数料率は 0〜100 の間で入れてください`,
+            msg: `「${ch.name}」の手数料率は0〜100の間で`,
           });
         } else if (parsed.reason === "per-item-invalid") {
           feeErrors.push({
             id: `per-${ch.id}`,
-            msg: `「${ch.name}」: 定額手数料は 0 以上の数値で入れてください`,
+            msg: `「${ch.name}」の定額手数料は0以上の数値で`,
           });
         }
         // fee-empty は入力待ち（エラー表示なしで除外）
@@ -236,7 +271,7 @@ export function Simulator() {
       }
       if (!ch.visible) continue;
       const params: ChannelParams = parsed.params;
-      // price が未確定/不正のときは ready=false で KPI・グラフとも表示されない。
+      // price が未確定/不正のときは ready=false で勘定尻・線図とも表示されない。
       // ここの 0 は「表示されない系列」の内部プレースホルダで、結果には出ない
       const p = price ?? 0;
       seriesAll.push({
@@ -260,7 +295,7 @@ export function Simulator() {
       seriesAll[0] ??
       null;
 
-    // 入力エラー（状態デザイン: 計算不能）
+    // 入力エラー（状態デザイン: 検算中）
     const rowErrors: { id: string; msg: string }[] = [];
     let rowIncomplete = false;
     let rowOverMax = false;
@@ -277,13 +312,13 @@ export function Simulator() {
     if (rowOverMax) {
       rowErrors.push({
         id: "row-max",
-        msg: `部数は ${MAX_COPIES.toLocaleString("ja-JP")}部までに対応しています`,
+        msg: `部数は${MAX_COPIES.toLocaleString("ja-JP")}部まで`,
       });
     }
     if (rowIncomplete) {
       rowErrors.push({
         id: "row-incomplete",
-        msg: "部数と単価をセットで入れてください（例: 100部・単価320円）",
+        msg: "部数と単価をセットで（例: 100部・単価320円）",
       });
     }
     const anyInput =
@@ -293,33 +328,29 @@ export function Simulator() {
       );
     const missing: { id: string; msg: string }[] = [];
     if (anyInput && (price === null || price <= 0)) {
-      missing.push({
-        id: "missing-price",
-        msg: "頒価が入っていません。1冊いくらで頒布するかを入れてください",
-      });
+      missing.push({ id: "missing-price", msg: "頒価が未記入です" });
     }
     if (anyInput && selectedTier === null) {
       missing.push({
         id: "missing-tier",
-        msg: "印刷費の単価表で「この部数で刷る」行を完成させて選んでください",
+        msg: "第二丁で「この部数で刷る」行を仕上げて選んでください",
       });
     }
     if (fixedEventVal === null) {
       missing.push({
         id: "fixed-event",
-        msg: "イベント参加費は 0 以上の数値で入れてください",
+        msg: "参加費は0以上の数値で",
       });
     }
     if (fixedOtherVal === null) {
       missing.push({
         id: "fixed-other",
-        msg: "その他の固定費は 0 以上の数値で入れてください",
+        msg: "その他の固定費は0以上の数値で",
       });
     }
 
     // 配分プラン（予定部数）。不正な予定部数は黙ってスキップせず、
-    // フィールドエラー＋結果側エラーを出して配分サマリ全体をブロックする
-    // （部分計算による過小な計画/損益を出さない）
+    // 欄エラー＋集計側エラーを出して配分サマリ全体をブロックする
     const plannedInvalidIds = new Set<string>();
     const plannedErrors: { id: string; msg: string }[] = [];
     for (const ch of state.channels) {
@@ -327,7 +358,7 @@ export function Simulator() {
         plannedInvalidIds.add(ch.id);
         plannedErrors.push({
           id: `plan-${ch.id}`,
-          msg: `「${ch.name}」: 予定部数は 0 以上の整数で入れてください`,
+          msg: `「${ch.name}」の予定部数は0以上の整数で`,
         });
       }
     }
@@ -338,7 +369,6 @@ export function Simulator() {
       if (chRow === undefined) continue;
       const planned = parsePlannedCopies(chRow.planned);
       if (!planned.ok) {
-        // 計算対象チャネルに不正な予定部数がある → 配分サマリをブロック
         plannedBlocked = true;
         continue;
       }
@@ -419,8 +449,7 @@ export function Simulator() {
       : { ...s, selectedTierId: firstComplete.id };
   };
 
-  // 入力中（キーストローク）には選択行を動かさない。値を消して入れ直す途中で
-  // 選択が別の行へ飛ぶのを防ぐため、選択の自動補正は blur / 行削除時に限定する。
+  // 入力中（キーストローク）には選択行を動かさない。選択の自動補正は blur / 行削除時に限定。
   const updateTier = (id: string, patch: Partial<SavedTierRow>): void => {
     edit((s) => ({
       ...s,
@@ -428,7 +457,6 @@ export function Simulator() {
     }));
   };
 
-  /** 単価表の入力を離れたタイミングで、無効になった選択行を安全に補正する。 */
   const fixSelectionOnBlur = (): void => {
     setState((s) => ensureSelection(s));
   };
@@ -514,15 +542,11 @@ export function Simulator() {
     });
     setRestored(false);
     setRestoreDismissed(true);
+    setConfirmHakushi(false);
   };
 
-  const scrollToChart = (): void => {
-    chartBlockRef.current?.scrollIntoView({ block: "start" });
-  };
+  // --- 表示（勘定のスナップショットと検算中の継続表示） ---------------------
 
-  // --- 表示用の文言 --------------------------------------------------------
-
-  const copies = selectedTier?.copies ?? 100;
   const mainBreakEven = mainSeries?.breakEven ?? null;
   const mainSellout = mainSeries?.sellout ?? 0;
   const mainPerCopy =
@@ -536,291 +560,455 @@ export function Simulator() {
       : null;
   const neverProfits = ready && mainSeries !== null && mainSeries.net <= 0;
 
-  let sentence = "";
-  if (ready && mainSeries !== null && selectedTier !== null) {
-    if (neverProfits) {
-      sentence =
-        "この頒価と単価では、何部頒布しても黒字になりません。頒価・部数・チャネルを変えて試してみてください";
-    } else if (mainBreakEven !== null && mainBreakEven <= selectedTier.copies) {
-      sentence = `${mainBreakEven}部から黒字になります。完売なら ${formatSignedYen(mainSellout)} です`;
-    } else {
-      sentence = `${selectedTier.copies}部完売でも ${formatSignedYen(mainSellout)} です。赤字覚悟で刷るか、条件を変えて試すかはあなた次第です`;
-    }
-  }
-
-  const chartAria =
-    ready && mainSeries !== null
-      ? neverProfits || mainBreakEven === null
-        ? "損益グラフ。この条件では黒字になりません"
-        : `損益グラフ。${mainSeries.name}は${mainBreakEven}部で黒字転換、完売時は${formatSignedYen(mainSellout)}`
-      : "損益グラフ。入力が完了すると損益カーブが表示されます";
+  const liveView: ViewSnap | null =
+    ready && selectedTier !== null && price !== null
+      ? {
+          copies: selectedTier.copies,
+          baseCost,
+          price,
+          seriesAll,
+          mainSeries,
+          mainBreakEven,
+          mainBreakEvenExact: mainSeries?.breakEvenExactK ?? null,
+          mainSellout,
+          mainPerCopy,
+          neverProfits,
+          range,
+          plans,
+          plannedTotal,
+          plannedBlocked,
+          allocation,
+        }
+      : null;
+  const lastValidRef = useRef<ViewSnap | null>(null);
+  useEffect(() => {
+    if (liveView !== null) lastValidRef.current = liveView;
+  });
+  // 検算中: 直前の有効な勘定を淡く保持（有効値が一度も無ければ null → 空状態）
+  const view = liveView ?? lastValidRef.current;
+  const kensanchu = liveView === null && view !== null;
 
   const errorList = [...missing, ...rowErrors, ...feeErrors, ...plannedErrors];
-  // 上限判定は「委託チャネルの行数」基準（表示 OFF・手数料未入力の行も数える。
-  // 系列色が 3 色 = 計算対象の枠が 3 件のため、行自体を 3 件までに制限する）
+  // エラー id → 訂正すべき欄のアンカー（既定はエラー id と同名の入力 id）
+  const errHref = (id: string): string => {
+    if (id === "missing-price") return "#price-input";
+    if (id === "missing-tier" || id.startsWith("row-")) return "#cho-2";
+    return `#${id}`;
+  };
+
+  // 上限判定は「委託チャネルの行数」基準（表示 OFF・手数料未入力の行も数える）
   const consignRows = state.channels.filter((c) => c.kind === "consign").length;
+
+  // 凡例（線図表示のトグルは第三丁と同一 state = 双方向同期）
+  const legend: LegendRow[] = (() => {
+    let ci = 0;
+    const rows: LegendRow[] = [];
+    for (const ch of state.channels) {
+      let colorVar = DIRECT_COLOR.colorVar;
+      let dash: string | undefined = undefined;
+      if (ch.kind === "consign") {
+        const c = CONSIGN_COLORS[ci];
+        ci += 1;
+        if (c === undefined) continue; // 色枠外は凡例にも出ない（欄側に「対象外」明示）
+        colorVar = c.colorVar;
+        dash = c.dash;
+      }
+      rows.push({
+        id: ch.id,
+        name: ch.name,
+        colorVar,
+        dash,
+        visible: ch.visible,
+        isMain: state.mainChannelId === ch.id,
+        active: activeIds.has(ch.id),
+      });
+    }
+    return rows;
+  })();
+
+  const chartAria =
+    view !== null
+      ? view.neverProfits || view.mainBreakEven === null
+        ? "損益グラフ。この条件では黒字になりません。"
+        : `損益グラフ。損益分岐点は${view.mainBreakEven}部、完売時損益は${formatChobo(view.mainSellout).aria}。`
+      : "損益グラフ。記帳がそろうと表示されます。";
+
+  // KPI の桁あふれ段階縮小（8桁以上で該当セルのみ縮小）
+  const chijimi = (n: number): string =>
+    Math.abs(Math.round(n)).toLocaleString("ja-JP").length >= 10
+      ? " chijimi"
+      : "";
+
+  // 帳面全体で有効な記入がまだ無い（完全な空） — 集計欄は骨格ごと出さない
+  const empty = view === null && errorList.length === 0;
+
+  // 単価表が実質空か（空状態の帳票演出用）
+  const tiersEmpty = state.tiers.every(
+    (t) => t.copies === "" && t.unit === "" && t.total === "",
+  );
+
+  const scrollToShukei = (): void => {
+    if (view === null && errorList.length > 0) {
+      const first = errorList[0];
+      if (first !== undefined) {
+        document
+          .querySelector(errHref(first.id))
+          ?.scrollIntoView({ block: "center" });
+        return;
+      }
+    }
+    (senzuRef.current ?? shukeiRef.current)?.scrollIntoView({
+      block: "start",
+    });
+  };
 
   // ---------------------------------------------------------------------------
 
   return (
-    <div>
-      {/* 状態バー群（復元・保存不可・サンプル） */}
-      {restored && !restoreDismissed && (
-        <div
-          className="alert restore-bar"
-          role="status"
-          style={{ marginBottom: "var(--sp-4)" }}
-        >
-          <span>前回の入力を復元しました</span>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={resetAll}
-          >
-            最初からやり直す
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost dismiss"
-            aria-label="この通知を閉じる"
-            onClick={() => setRestoreDismissed(true)}
-          >
-            ×
-          </button>
-        </div>
-      )}
-      {loaded && !storageOk && (
-        <div
-          className="alert alert-warn"
-          role="status"
-          style={{ marginBottom: "var(--sp-4)" }}
-        >
-          この環境ではデータを保存できません。ページを閉じると入力が消えます
-        </div>
-      )}
+    <>
+      <div className="chomen">
+        {/* ツメ列（丁番号アンカー） */}
+        <nav className="tsume-retsu" aria-label="丁の一覧">
+          <a className="tsume-ban" href="#cho-1">
+            一
+          </a>
+          <a className="tsume-ban" href="#cho-2">
+            二
+          </a>
+          <a className="tsume-ban" href="#cho-3">
+            三
+          </a>
+          <a className="tsume-ban" href="#cho-4">
+            四
+          </a>
+        </nav>
 
-      <div className="sim-layout">
-        {/* ===== 入力レール（製図台の左） ===== */}
-        <div className="panel-input">
+        {/* ===== 記入欄 ===== */}
+        <div className="kinyu-ran">
+          {restored && !restoreDismissed && (
+            <div className="fukugen" role="status">
+              <span>前回の帳面を開きました</span>
+              <span className="migiyose">
+                {confirmHakushi ? (
+                  <>
+                    <span className="sai">本当に白紙へ？</span>
+                    <button
+                      type="button"
+                      className="bt bt-shu bt-sm"
+                      onClick={resetAll}
+                    >
+                      戻す
+                    </button>
+                    <button
+                      type="button"
+                      className="bt bt-sub bt-sm"
+                      onClick={() => setConfirmHakushi(false)}
+                    >
+                      やめる
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="bt bt-sub bt-sm"
+                      onClick={() => setConfirmHakushi(true)}
+                    >
+                      白紙に戻す
+                    </button>
+                    <button
+                      type="button"
+                      className="bt-kesu"
+                      aria-label="この知らせを閉じる"
+                      onClick={() => setRestoreDismissed(true)}
+                    >
+                      ×
+                    </button>
+                  </>
+                )}
+              </span>
+            </div>
+          )}
+          {loaded && !storageOk && (
+            <div className="fusen fusen-shu" role="status">
+              ※
+              この環境では帳面を保存できません。ページを閉じると記帳が消えます。
+            </div>
+          )}
           {state.isSample && (
-            <p className="sample-row">
-              <span className="badge badge-warn">サンプル値</span>
-              サンプルの数字です。自分の見積もりに書き換えてください
+            <p className="sai" style={{ marginTop: "var(--ma-2)" }}>
+              <span className="mihon">見本</span>{" "}
+              見本の数字で計算中。どこか1欄でも書き直すと消えます。
             </p>
           )}
 
-          {/* ① 頒価と刷り部数 */}
-          <section className="panel-block" aria-labelledby="legend-price">
-            <h3 className="panel-legend" id="legend-price">
-              <span className="step-no" aria-hidden="true">
-                1
-              </span>
-              頒価と刷り部数
-            </h3>
-            <div className="field">
-              <label htmlFor="price-input">頒価（1冊の値段）</label>
-              <div className="suffix-field">
-                <input
-                  id="price-input"
-                  type="number"
-                  inputMode="numeric"
-                  min="0"
-                  step="10"
-                  value={state.price}
-                  onChange={(e) =>
-                    edit((s) => ({ ...s, price: e.target.value }))
-                  }
-                  aria-invalid={
-                    state.price !== "" && (price === null || price <= 0)
-                  }
-                  className="tabular"
-                />
-                <span className="suffix">円</span>
+          {/* 第一丁 頒価 */}
+          <section className="cho" id="cho-1" aria-labelledby="cho-1-midashi">
+            <h2 className="cho-midashi" id="cho-1-midashi">
+              <span className="kansuji">一</span>頒価
+            </h2>
+            <div className="cho-body">
+              <div className="kinyu" style={{ maxWidth: "16rem" }}>
+                <label className="ran" htmlFor="price-input">
+                  1冊の頒価（円）
+                </label>
+                <div className="kinyu-tani">
+                  <input
+                    id="price-input"
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    step="10"
+                    className="suji"
+                    value={state.price}
+                    onChange={(e) =>
+                      edit((s) => ({ ...s, price: e.target.value }))
+                    }
+                    aria-invalid={
+                      state.price !== "" && (price === null || price <= 0)
+                    }
+                    aria-describedby="price-teisei"
+                  />
+                  <span className="tani">円</span>
+                </div>
+                {state.price !== "" && (price === null || price <= 0) && (
+                  <p className="teisei" id="price-teisei">
+                    訂正：頒価が未記入です
+                  </p>
+                )}
               </div>
-              {state.price !== "" && (price === null || price <= 0) && (
-                <p className="field-error">
-                  頒価が入っていません。1冊いくらで頒布するかを入れてください
-                </p>
-              )}
+              <p className="sai">
+                刷り部数は第二丁の単価表から「この部数で刷る」行を選びます
+                {selectedTier !== null && (
+                  <>
+                    （現在:{" "}
+                    <strong className="suji">{selectedTier.copies}</strong> 部）
+                  </>
+                )}
+              </p>
             </div>
-            <p className="field-hint">
-              刷り部数は ② の単価表から「この部数で刷る」行を選びます
-              {selectedTier !== null && (
+          </section>
+
+          {/* 第二丁 印刷費（単価表） */}
+          <section className="cho" id="cho-2" aria-labelledby="cho-2-midashi">
+            <h2 className="cho-midashi" id="cho-2-midashi">
+              <span className="kansuji">二</span>印刷費（単価表）
+            </h2>
+            <p className="cho-hosoku sai">
+              印刷所の見積の、部数と単価をそのまま書き写せば足ります。単価か総額、書きやすいほうで。
+            </p>
+            <div className="cho-body">
+              {tiersEmpty ? (
+                <div className="karacho">
+                  <div className="karacho-sen" />
+                  <div className="karacho-sen" />
+                  <div className="karacho-sen" />
+                  <p className="karacho-moji">
+                    まだ単価が記帳されていません。まずは1行、部数と単価を。
+                  </p>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "var(--ma-2)",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="bt bt-sub"
+                      onClick={addTier}
+                    >
+                      ＋ 行を足す
+                    </button>
+                    <button
+                      type="button"
+                      className="bt bt-sub"
+                      onClick={applySample}
+                    >
+                      サンプルの数字で試す
+                    </button>
+                  </div>
+                </div>
+              ) : (
                 <>
-                  （現在:{" "}
-                  <strong className="tabular">{selectedTier.copies}部</strong>）
+                  <div className="hyo-waku">
+                    <table className="hyo">
+                      <thead>
+                        <tr>
+                          <th scope="col">刷る</th>
+                          <th scope="col" className="suji-col">
+                            部数（部）
+                          </th>
+                          <th scope="col">記入（円）</th>
+                          <th scope="col" className="suji-col">
+                            換算
+                          </th>
+                          <th scope="col">
+                            <span className="sr-only">行の削除</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {state.tiers.map((t, i) => {
+                          const norm = tiersNorm.get(t.id) ?? null;
+                          const erabi = state.selectedTierId === t.id;
+                          return (
+                            <tr
+                              key={t.id}
+                              className={erabi ? "is-erabi" : undefined}
+                            >
+                              <td>
+                                <label
+                                  className="shu-radio"
+                                  title="この部数で刷る"
+                                >
+                                  <input
+                                    type="radio"
+                                    name="tier-select"
+                                    checked={erabi}
+                                    disabled={norm === null}
+                                    onChange={() =>
+                                      setState((s) => ({
+                                        ...s,
+                                        selectedTierId: t.id,
+                                      }))
+                                    }
+                                    aria-label={`この部数で刷る（${t.copies === "" ? `${i + 1}行目` : `${t.copies}部`}）`}
+                                  />
+                                </label>
+                              </td>
+                              <td style={{ minWidth: "6.5rem" }}>
+                                <input
+                                  type="number"
+                                  inputMode="numeric"
+                                  min="1"
+                                  step="1"
+                                  className="kinyu-input suji"
+                                  value={t.copies}
+                                  onChange={(e) =>
+                                    updateTier(t.id, {
+                                      copies: e.target.value,
+                                    })
+                                  }
+                                  onBlur={fixSelectionOnBlur}
+                                  aria-label={`${i + 1}行目の部数`}
+                                />
+                              </td>
+                              <td>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    gap: "var(--ma-1)",
+                                    alignItems: "center",
+                                  }}
+                                >
+                                  <div
+                                    className="kubun-toggle"
+                                    role="group"
+                                    aria-label={`${i + 1}行目の記入方法`}
+                                  >
+                                    <button
+                                      type="button"
+                                      aria-pressed={t.basis === "unit"}
+                                      onClick={() =>
+                                        updateTier(t.id, { basis: "unit" })
+                                      }
+                                    >
+                                      単価
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-pressed={t.basis === "total"}
+                                      onClick={() =>
+                                        updateTier(t.id, { basis: "total" })
+                                      }
+                                    >
+                                      総額
+                                    </button>
+                                  </div>
+                                  <input
+                                    type="number"
+                                    inputMode="decimal"
+                                    min="0"
+                                    className="kinyu-input suji"
+                                    style={{ minWidth: "6.5rem" }}
+                                    value={
+                                      t.basis === "unit" ? t.unit : t.total
+                                    }
+                                    onChange={(e) =>
+                                      updateTier(
+                                        t.id,
+                                        t.basis === "unit"
+                                          ? { unit: e.target.value }
+                                          : { total: e.target.value },
+                                      )
+                                    }
+                                    onBlur={fixSelectionOnBlur}
+                                    aria-label={`${i + 1}行目の${t.basis === "unit" ? "単価（円/部）" : "総額（円）"}`}
+                                  />
+                                </div>
+                              </td>
+                              <td className="suji-col sai suji">
+                                {norm === null
+                                  ? "—"
+                                  : t.basis === "unit"
+                                    ? `総額 ${Math.round(norm.totalCost).toLocaleString("ja-JP")}`
+                                    : `単価 ${(Math.round(norm.unitCost * 10) / 10).toLocaleString("ja-JP")}`}
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="bt-kesu"
+                                  disabled={state.tiers.length <= 2}
+                                  onClick={() => removeTier(t.id)}
+                                  aria-label={`${i + 1}行目を削除`}
+                                >
+                                  ×
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {rowErrors.map((e) => (
+                    <p key={e.id} className="teisei">
+                      訂正：{e.msg}
+                    </p>
+                  ))}
+                  <button
+                    type="button"
+                    className="bt-gyotasu"
+                    onClick={addTier}
+                  >
+                    ＋ 行を足す
+                  </button>
+                  <div>
+                    <button
+                      type="button"
+                      className="bt bt-sub bt-sm"
+                      onClick={applySample}
+                    >
+                      サンプルの数字で試す
+                    </button>
+                  </div>
                 </>
               )}
-            </p>
-          </section>
-
-          {/* ② 印刷費（階段単価テーブル） */}
-          <section className="panel-block" aria-labelledby="legend-tiers">
-            <h3 className="panel-legend" id="legend-tiers">
-              <span className="step-no" aria-hidden="true">
-                2
-              </span>
-              印刷費（部数ごとの単価表）
-            </h3>
-            <p className="field-hint">
-              印刷所の見積にある「部数ごとの単価」をそのまま写します。部数が増えるほど1冊あたりは安くなるのが一般的です。単価か総額のどちらかを入れれば、もう一方は自動計算されます
-            </p>
-            <div className="table-scroll">
-              <table className="tier-table">
-                <thead>
-                  <tr>
-                    <th scope="col">
-                      <span className="sr-only">この部数で刷る</span>選択
-                    </th>
-                    <th scope="col">部数</th>
-                    <th scope="col">単価（円/冊）</th>
-                    <th scope="col">総額（円）</th>
-                    <th scope="col">
-                      <span className="sr-only">行の削除</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state.tiers.map((t, i) => {
-                    const norm = tiersNorm.get(t.id) ?? null;
-                    const selected = state.selectedTierId === t.id;
-                    const unitValue =
-                      t.basis === "unit"
-                        ? t.unit
-                        : norm === null
-                          ? ""
-                          : String(Math.round(norm.unitCost * 10) / 10);
-                    const totalValue =
-                      t.basis === "total"
-                        ? t.total
-                        : norm === null
-                          ? ""
-                          : String(Math.round(norm.totalCost));
-                    return (
-                      <tr
-                        key={t.id}
-                        className={selected ? "is-selected" : undefined}
-                      >
-                        <td>
-                          <label className="tier-select">
-                            <input
-                              type="radio"
-                              name="tier-select"
-                              checked={selected}
-                              disabled={norm === null}
-                              onChange={() =>
-                                setState((s) => ({
-                                  ...s,
-                                  selectedTierId: t.id,
-                                }))
-                              }
-                              aria-label={`この部数で刷る（${t.copies === "" ? `${i + 1}行目` : `${t.copies}部`}）`}
-                            />
-                          </label>
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            min="1"
-                            step="1"
-                            className="col-copies tabular"
-                            value={t.copies}
-                            onChange={(e) =>
-                              updateTier(t.id, { copies: e.target.value })
-                            }
-                            onBlur={fixSelectionOnBlur}
-                            aria-label={`${i + 1}行目の部数`}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            className={`col-money tabular${t.basis === "total" ? " is-derived" : ""}`}
-                            value={unitValue}
-                            onChange={(e) =>
-                              updateTier(t.id, {
-                                unit: e.target.value,
-                                basis: "unit",
-                              })
-                            }
-                            onBlur={fixSelectionOnBlur}
-                            aria-label={`${i + 1}行目の単価（円/冊）`}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            min="0"
-                            className={`col-money tabular${t.basis === "unit" ? " is-derived" : ""}`}
-                            value={totalValue}
-                            onChange={(e) =>
-                              updateTier(t.id, {
-                                total: e.target.value,
-                                basis: "total",
-                              })
-                            }
-                            onBlur={fixSelectionOnBlur}
-                            aria-label={`${i + 1}行目の総額（円）`}
-                          />
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            className="btn-icon"
-                            disabled={state.tiers.length <= 2}
-                            onClick={() => removeTier(t.id)}
-                            aria-label={`${i + 1}行目を削除`}
-                          >
-                            ×
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {rowErrors.map((e) => (
-              <p key={e.id} className="field-error">
-                {e.msg}
-              </p>
-            ))}
-            <div className="preset-row">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={addTier}
-              >
-                ＋ 行を追加
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={applySample}
-              >
-                サンプルの数字で試す
-              </button>
             </div>
           </section>
 
-          {/* ③ 頒布チャネル（手数料・配分） */}
-          <section className="panel-block" aria-labelledby="legend-channels">
-            <h3 className="panel-legend" id="legend-channels">
-              <span className="step-no" aria-hidden="true">
-                3
-              </span>
-              頒布チャネル（手数料）
-            </h3>
-            <p className="field-hint">
-              手数料率は、頒価から差し引かれる販売手数料の割合です。委託先の最新の案内に記載の料率を入れてください
+          {/* 第三丁 頒布チャネル */}
+          <section className="cho" id="cho-3" aria-labelledby="cho-3-midashi">
+            <h2 className="cho-midashi" id="cho-3-midashi">
+              <span className="kansuji">三</span>頒布チャネル
+            </h2>
+            <p className="cho-hosoku sai">
+              委託価格×料率＋定額が1冊ごとに引かれます。料率は各委託先の最新の案内に記載の値を。
             </p>
-            <div className="channel-list">
+            <div className="cho-body">
               {state.channels.map((ch) => {
-                const s = seriesAll.find((x) => x.id === ch.id);
+                const isMain = state.mainChannelId === ch.id;
                 const feeInvalid =
                   ch.kind === "consign" &&
                   ch.fee !== "" &&
@@ -829,20 +1017,22 @@ export function Simulator() {
                   ch.kind === "consign" &&
                   ch.perItem.trim() !== "" &&
                   parseNum(ch.perItem) === null;
+                const seriesRow = seriesAll.find((s) => s.id === ch.id);
+                const colorClass =
+                  seriesRow?.colorClass ??
+                  (ch.kind === "direct" ? "iro-aozumi" : "iro-ai");
                 return (
                   <div
                     key={ch.id}
-                    className={`channel-card${state.mainChannelId === ch.id ? " is-main" : ""}`}
+                    className={`itaku-hyo${isMain ? " is-shu" : ""}`}
                   >
-                    <div className="channel-head">
+                    <div className="itaku-head">
                       <span
-                        className={s?.colorClass ?? "series-direct"}
+                        className={`iro-mihon ${colorClass}`}
                         aria-hidden="true"
-                      >
-                        <span className="series-swatch" />
-                      </span>
+                      />
                       {ch.kind === "direct" ? (
-                        <strong>{ch.name}（手数料 0%）</strong>
+                        <strong>{ch.name}（手数料なし）</strong>
                       ) : (
                         <input
                           type="text"
@@ -856,7 +1046,7 @@ export function Simulator() {
                       {ch.kind === "consign" && (
                         <button
                           type="button"
-                          className="btn-icon"
+                          className="bt-kesu"
                           onClick={() => removeChannel(ch.id)}
                           aria-label={`${ch.name}を削除`}
                         >
@@ -864,104 +1054,101 @@ export function Simulator() {
                         </button>
                       )}
                     </div>
-                    <div className="channel-controls">
+                    <div className="itaku-body">
                       {ch.kind === "consign" && (
                         <>
-                          <div className="field">
-                            <label htmlFor={`fee-${ch.id}`}>手数料率</label>
-                            <div className="suffix-field">
-                              <input
-                                id={`fee-${ch.id}`}
-                                type="number"
-                                inputMode="decimal"
-                                min="0"
-                                max="100"
-                                step="0.1"
-                                value={ch.fee}
-                                onChange={(e) =>
-                                  updateChannel(ch.id, { fee: e.target.value })
-                                }
-                                aria-invalid={feeInvalid}
-                                className="tabular"
-                              />
-                              <span className="suffix">%</span>
-                            </div>
+                          <div className="kinyu">
+                            <label className="ran" htmlFor={`fee-${ch.id}`}>
+                              手数料率（%）
+                            </label>
+                            <input
+                              id={`fee-${ch.id}`}
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              max="100"
+                              step="0.1"
+                              className="kinyu-input suji"
+                              value={ch.fee}
+                              onChange={(e) =>
+                                updateChannel(ch.id, { fee: e.target.value })
+                              }
+                              aria-invalid={feeInvalid}
+                            />
                             {feeInvalid && (
-                              <p className="field-error">
-                                手数料率は 0〜100 の間で入れてください
+                              <p className="teisei">
+                                訂正：手数料率は0〜100の間で
                               </p>
                             )}
                           </div>
-                          <div className="field">
-                            <label htmlFor={`per-${ch.id}`}>定額手数料</label>
-                            <div className="suffix-field">
-                              <input
-                                id={`per-${ch.id}`}
-                                type="number"
-                                inputMode="numeric"
-                                min="0"
-                                value={ch.perItem}
-                                onChange={(e) =>
-                                  updateChannel(ch.id, {
-                                    perItem: e.target.value,
-                                  })
-                                }
-                                aria-invalid={perItemInvalid}
-                                className="tabular"
-                              />
-                              <span className="suffix">円/冊</span>
-                            </div>
+                          <div className="kinyu">
+                            <label className="ran" htmlFor={`per-${ch.id}`}>
+                              定額（円/冊）
+                            </label>
+                            <input
+                              id={`per-${ch.id}`}
+                              type="number"
+                              inputMode="numeric"
+                              min="0"
+                              className="kinyu-input suji"
+                              value={ch.perItem}
+                              onChange={(e) =>
+                                updateChannel(ch.id, {
+                                  perItem: e.target.value,
+                                })
+                              }
+                              aria-invalid={perItemInvalid}
+                            />
                             {perItemInvalid && (
-                              <p className="field-error">
-                                定額手数料は 0 以上の数値で入れてください
+                              <p className="teisei">
+                                訂正：定額手数料は0以上の数値で
                               </p>
                             )}
                           </div>
                         </>
                       )}
-                      <div className="field">
-                        <label htmlFor={`plan-${ch.id}`}>
-                          予定部数（任意）
+                      <div className="kinyu">
+                        <label className="ran" htmlFor={`plan-${ch.id}`}>
+                          予定部数（部・任意）
                         </label>
-                        <div className="suffix-field">
-                          <input
-                            id={`plan-${ch.id}`}
-                            type="number"
-                            inputMode="numeric"
-                            min="0"
-                            step="1"
-                            value={ch.planned}
-                            onChange={(e) =>
-                              updateChannel(ch.id, { planned: e.target.value })
-                            }
-                            aria-invalid={plannedInvalidIds.has(ch.id)}
-                            className="tabular"
-                          />
-                          <span className="suffix">部</span>
-                        </div>
+                        <input
+                          id={`plan-${ch.id}`}
+                          type="number"
+                          inputMode="numeric"
+                          min="0"
+                          step="1"
+                          className="kinyu-input suji"
+                          value={ch.planned}
+                          onChange={(e) =>
+                            updateChannel(ch.id, { planned: e.target.value })
+                          }
+                          aria-invalid={plannedInvalidIds.has(ch.id)}
+                        />
                         {plannedInvalidIds.has(ch.id) && (
-                          <p className="field-error">
-                            予定部数は 0 以上の整数で入れてください
+                          <p className="teisei">
+                            訂正：予定部数は0以上の整数で
                           </p>
                         )}
                       </div>
                     </div>
-                    <div className="channel-toggles">
-                      <label className="check-label">
+                    <div className="itaku-ashi">
+                      <label className="sumi-check">
                         <input
                           type="checkbox"
                           checked={ch.visible}
                           onChange={(e) =>
-                            updateChannel(ch.id, { visible: e.target.checked })
+                            updateChannel(ch.id, {
+                              visible: e.target.checked,
+                            })
                           }
                         />
-                        グラフに表示
+                        線図に表示
                       </label>
-                      <label className="check-label">
+                      <label className="sumi-check">
                         <input
                           type="radio"
                           name="main-channel"
-                          checked={state.mainChannelId === ch.id}
+                          checked={isMain}
                           disabled={!activeIds.has(ch.id)}
                           onChange={() => selectMain(ch.id)}
                         />
@@ -969,15 +1156,15 @@ export function Simulator() {
                       </label>
                     </div>
                     {overLimitIds.has(ch.id) && (
-                      <p className="source-note">
-                        <span className="badge badge-warn">対象外</span>{" "}
-                        4件目以降の委託はグラフ・計算の対象外です（委託は
+                      <p className="itaku-chu sai">
+                        <span className="fuda fuda-akaji">対象外</span>{" "}
+                        4件目以降の委託は線図・計算の対象外です（委託は
                         {MAX_CONSIGN}
                         件まで）。不要な委託先を削除すると反映されます
                       </p>
                     )}
                     {ch.note !== undefined && (
-                      <p className="source-note">
+                      <p className="itaku-chu sai">
                         {ch.note}
                         {ch.sourceUrl !== undefined && (
                           <>
@@ -996,366 +1183,487 @@ export function Simulator() {
                   </div>
                 );
               })}
-            </div>
-            <div className="preset-row" role="group" aria-label="委託先を追加">
-              {CONSIGN_PRESETS.map((p) => (
+
+              <div className="tsume-obi" role="group" aria-label="委託先を追加">
+                {CONSIGN_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="tsume"
+                    disabled={consignRows >= MAX_CONSIGN}
+                    onClick={() =>
+                      addChannel({
+                        name: p.name,
+                        fee: p.fee,
+                        perItem: p.perItem === "" ? "0" : p.perItem,
+                        note: p.note,
+                        ...(p.sourceUrl === null
+                          ? {}
+                          : { sourceUrl: p.sourceUrl }),
+                      })
+                    }
+                  >
+                    ＋ {p.name}
+                  </button>
+                ))}
                 <button
-                  key={p.id}
                   type="button"
-                  className="btn btn-secondary"
+                  className="tsume"
                   disabled={consignRows >= MAX_CONSIGN}
                   onClick={() =>
-                    addChannel({
-                      name: p.name,
-                      fee: p.fee,
-                      perItem: p.perItem === "" ? "0" : p.perItem,
-                      note: p.note,
-                      ...(p.sourceUrl === null
-                        ? {}
-                        : { sourceUrl: p.sourceUrl }),
-                    })
+                    addChannel({ name: "委託先", fee: "", perItem: "0" })
                   }
                 >
-                  ＋ {p.name}
+                  ＋ その他
                 </button>
-              ))}
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={consignRows >= MAX_CONSIGN}
-                onClick={() =>
-                  addChannel({ name: "委託先", fee: "", perItem: "0" })
-                }
-              >
-                ＋ その他の委託先
-              </button>
-            </div>
-            {consignRows >= MAX_CONSIGN && (
-              <p className="field-hint">
-                委託先は{MAX_CONSIGN}
-                件まで追加できます（グラフの系列色の上限）。入れ替えるには不要な委託先を削除してください
+              </div>
+              {consignRows >= MAX_CONSIGN && (
+                <p className="sai">
+                  委託は{MAX_CONSIGN}
+                  件まで記帳できます。入れ替えるには不要な委託先を削除してください。
+                </p>
+              )}
+              <p className="sai">
+                プリセットの料率は公開情報にもとづく目安で、書き直せます。料率は改定されることがあります。最新の料率は各委託先の公式の案内で。
               </p>
-            )}
-            <p className="source-note">
-              プリセットの料率は各委託先の公開情報にもとづく目安で、編集できます。料率は改定されることがあります。最新の料率は各委託先の公式の案内でご確認ください
-            </p>
+            </div>
           </section>
 
-          {/* 詳細オプション（固定費）。不正入力がある間は閉じて見えなくならないよう開いたままにする */}
-          <details
-            className="panel-details"
-            open={fixedEventInvalid || fixedOtherInvalid || undefined}
-          >
-            <summary>詳細オプション（イベント参加費などの固定費）</summary>
-            <div className="details-body">
-              <div className="field">
-                <label htmlFor="fixed-event">イベント参加費</label>
-                <div className="suffix-field">
-                  <input
-                    id="fixed-event"
-                    type="number"
-                    inputMode="numeric"
-                    min="0"
-                    value={state.fixedEvent}
-                    onChange={(e) =>
-                      edit((s) => ({ ...s, fixedEvent: e.target.value }))
-                    }
-                    aria-invalid={fixedEventInvalid}
-                    className="tabular"
-                  />
-                  <span className="suffix">円</span>
+          {/* 第四丁 固定費（折畳・不正入力がある間は開いたまま） */}
+          <section className="cho" id="cho-4" aria-labelledby="cho-4-midashi">
+            <details
+              className="tatami"
+              open={fixedEventInvalid || fixedOtherInvalid || undefined}
+            >
+              <summary id="cho-4-midashi">
+                <span className="cho-midashi" style={{ fontSize: "inherit" }}>
+                  <span className="kansuji">四</span>固定費（任意）
+                </span>
+              </summary>
+              <div className="tatami-body">
+                <p className="sai">
+                  参加費・交通費・送料など、部数によらず掛かる費用。既定は0円。
+                </p>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(10rem, 1fr))",
+                    gap: "var(--ma-2)",
+                  }}
+                >
+                  <div className="kinyu">
+                    <label className="ran" htmlFor="fixed-event">
+                      イベント参加費（円）
+                    </label>
+                    <input
+                      id="fixed-event"
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      className="kinyu-input suji"
+                      value={state.fixedEvent}
+                      onChange={(e) =>
+                        edit((s) => ({ ...s, fixedEvent: e.target.value }))
+                      }
+                      aria-invalid={fixedEventInvalid}
+                    />
+                    {fixedEventInvalid && (
+                      <p className="teisei">訂正：参加費は0以上の数値で</p>
+                    )}
+                  </div>
+                  <div className="kinyu">
+                    <label className="ran" htmlFor="fixed-other">
+                      その他の固定費（円）
+                    </label>
+                    <input
+                      id="fixed-other"
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      className="kinyu-input suji"
+                      value={state.fixedOther}
+                      onChange={(e) =>
+                        edit((s) => ({ ...s, fixedOther: e.target.value }))
+                      }
+                      aria-invalid={fixedOtherInvalid}
+                    />
+                    {fixedOtherInvalid && (
+                      <p className="teisei">
+                        訂正：その他の固定費は0以上の数値で
+                      </p>
+                    )}
+                  </div>
                 </div>
-                {fixedEventInvalid && (
-                  <p className="field-error">
-                    イベント参加費は 0 以上の数値で入れてください
-                  </p>
-                )}
               </div>
-              <div className="field">
-                <label htmlFor="fixed-other">
-                  その他の固定費（交通費・備品など）
-                </label>
-                <div className="suffix-field">
-                  <input
-                    id="fixed-other"
-                    type="number"
-                    inputMode="numeric"
-                    min="0"
-                    value={state.fixedOther}
-                    onChange={(e) =>
-                      edit((s) => ({ ...s, fixedOther: e.target.value }))
-                    }
-                    aria-invalid={fixedOtherInvalid}
-                    className="tabular"
-                  />
-                  <span className="suffix">円</span>
-                </div>
-                {fixedOtherInvalid && (
-                  <p className="field-error">
-                    その他の固定費は 0 以上の数値で入れてください
-                  </p>
-                )}
-              </div>
-              <p className="field-hint">
-                既定は 0 円。オプション費用・送料などもここに加算できます
-              </p>
-            </div>
-          </details>
+            </details>
+          </section>
         </div>
 
-        {/* ===== 結果ステージ（製図台の右） ===== */}
-        <div className="results-stage" aria-label="計算結果">
-          {/* KPI ストリップ */}
-          <div className="kpi-block">
-            {errorList.length > 0 && (
-              <div className="alert" role="status">
-                <div>
-                  {errorList.map((e) => (
-                    <p key={e.id} style={{ margin: 0 }}>
-                      {e.msg}
-                    </p>
-                  ))}
-                </div>
+        {/* ===== 集計欄 ===== */}
+        <aside className="shukei-ran" aria-label="集計欄" ref={shukeiRef}>
+          {errorList.length > 0 && (
+            <div
+              className="fusen fusen-shu"
+              role="status"
+              style={{ marginBottom: "var(--ma-2)" }}
+            >
+              訂正が必要な欄があります
+              <ul>
+                {errorList.map((e) => (
+                  <li key={e.id}>
+                    <a href={errHref(e.id)}>訂正：{e.msg}</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {empty ? (
+            <p className="sai">記帳がそろうと、ここに勘定尻と線図が出ます。</p>
+          ) : view === null ? (
+            <div className="kanjo-jiri">
+              <div className="kanjo-kashira">
+                <span className="ran">勘定尻</span>
+                <span className="fuda fuda-akaji">検算中</span>
               </div>
-            )}
-            <div className="kpi-strip">
-              <div className="stat">
-                <span className="stat-label">損益分岐</span>
-                <span className="stat-value tabular">
-                  {ready && !neverProfits && mainBreakEven !== null ? (
-                    <>
-                      {mainBreakEven}
-                      <span className="stat-unit">部</span>
-                    </>
-                  ) : (
-                    "—"
-                  )}
-                </span>
-                {neverProfits && (
-                  <span className="badge badge-warn">
-                    この条件では黒字になりません
+              <div className="kanjo-dai">
+                <div className="ran">損益分岐部数</div>
+                <div className="kanjo-suji">
+                  <span className="oki suji" style={{ color: "var(--sumi-2)" }}>
+                    ―
                   </span>
-                )}
-              </div>
-              <div className="stat">
-                <span className="stat-label">完売時</span>
-                <span
-                  className={`stat-value tabular${
-                    ready ? (mainSellout >= 0 ? " is-ok" : " is-err") : ""
-                  }`}
-                >
-                  {ready ? formatSignedYen(mainSellout) : "—"}
-                </span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">1冊あたり</span>
-                <span
-                  className={`stat-value tabular${
-                    ready && mainPerCopy !== null
-                      ? mainPerCopy >= 0
-                        ? " is-ok"
-                        : " is-err"
-                      : ""
-                  }`}
-                >
-                  {ready && mainPerCopy !== null
-                    ? formatSignedYen(mainPerCopy)
-                    : "—"}
-                </span>
+                </div>
+                <p className="kanjo-hochu sai">
+                  検算中 — 訂正すると自動で計算し直します
+                </p>
               </div>
             </div>
-
-            {/* 非主チャネルの分岐チップ */}
-            {ready && seriesAll.length > 1 && (
-              <div className="kpi-chips">
-                {seriesAll
-                  .filter((s) => s.id !== (mainSeries?.id ?? ""))
-                  .map((s) => (
-                    <span key={s.id} className="chip tabular">
-                      <span className={s.colorClass} aria-hidden="true">
-                        <span className="series-swatch" />
-                      </span>
-                      {s.name}:{" "}
-                      {s.breakEven === null ? "黒字化なし" : `${s.breakEven}部`}
-                    </span>
-                  ))}
-              </div>
-            )}
-
-            <p
-              className="result-sentence"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              {sentence}
-            </p>
-
-            {range !== null && (
-              <p className="price-range-row tabular">
-                頒価の目安レンジ: ¥{range.sellout.toLocaleString("ja-JP")}〜¥
-                {range.at70.toLocaleString("ja-JP")}
-                （完売で±0〜7割頒布で±0になる頒価。入力値から算出した目安です）
-              </p>
-            )}
-
-            {plannedBlocked && (
-              <p className="price-range-row">
-                配分プラン:
-                予定部数を修正するまで計算できません（不正な予定部数の行があります）
-              </p>
-            )}
-            {ready && allocation !== null && (
-              <p className="price-range-row tabular">
-                配分プラン:{" "}
-                {plans.map((p) => `${p.name} ${p.copies}部`).join(" ＋ ")} →{" "}
-                {formatSignedYen(allocation)}
-                {selectedTier !== null &&
-                  plannedTotal > selectedTier.copies && (
-                    <>
-                      {" "}
-                      <span className="badge badge-warn">
-                        予定部数の合計が刷り部数（{selectedTier.copies}
-                        部）を超えています
-                      </span>
-                    </>
-                  )}
-              </p>
-            )}
-          </div>
-
-          {/* 損益グラフ */}
-          <div className="chart-block" ref={chartBlockRef} id="profit-chart">
-            <ProfitChart
-              ready={ready}
-              copies={copies}
-              baseCost={baseCost}
-              series={seriesAll}
-              mainId={mainSeries?.id ?? null}
-              breakEvenExactMain={mainSeries?.breakEvenExactK ?? null}
-              breakEvenLabel={
-                mainBreakEven === null ? null : `損益分岐 ${mainBreakEven}部`
-              }
-              selloutLabel={
-                ready ? `完売 ${formatSignedYen(mainSellout)}` : null
-              }
-              selloutPositive={mainSellout >= 0}
-              onSelectMain={selectMain}
-              ariaLabel={chartAria}
-            >
-              {!ready && (
-                <div className="chart-empty-msg">
-                  <p style={{ margin: 0 }}>
-                    単価表を入れると、ここに損益カーブが描かれます
-                  </p>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={applySample}
+          ) : (
+            <div className={kensanchu ? "kensanchu" : undefined}>
+              {/* 勘定尻（KPI 1+2・二重罫の締め） */}
+              <div className="kanjo-jiri">
+                <div className="kanjo-kashira">
+                  <span className="ran">勘定尻</span>
+                  <span
+                    style={{
+                      display: "flex",
+                      gap: "var(--ma-1)",
+                      alignItems: "center",
+                    }}
                   >
-                    サンプルの数字で試す
-                  </button>
+                    {state.isSample && !kensanchu && (
+                      <span className="sai">見本の数字で計算中</span>
+                    )}
+                    {kensanchu && (
+                      <span className="fuda fuda-akaji">検算中</span>
+                    )}
+                  </span>
+                </div>
+                <div className="kanjo-dai">
+                  <div className="ran">損益分岐部数</div>
+                  <div className="kanjo-suji">
+                    {view.neverProfits || view.mainBreakEven === null ? (
+                      <span
+                        className="oki suji"
+                        style={{ color: "var(--sumi-2)" }}
+                      >
+                        ―
+                      </span>
+                    ) : (
+                      <>
+                        <span
+                          className={`oki suji${chijimi(view.mainBreakEven)}`}
+                        >
+                          {view.mainBreakEven.toLocaleString("ja-JP")}
+                        </span>
+                        <span className="tani">部</span>
+                      </>
+                    )}
+                  </div>
+                  <p className="kanjo-hochu sai" aria-live="polite">
+                    {view.neverProfits || view.mainBreakEven === null
+                      ? "この条件では黒字になりません"
+                      : view.mainBreakEven <= view.copies
+                        ? `${view.mainBreakEven}部目から黒字`
+                        : `完売しても届きません（分岐 ${view.mainBreakEven}部）`}
+                  </p>
+                </div>
+                <div className="kanjo-fuku">
+                  <div>
+                    <div className="ran">完売時損益</div>
+                    <div className="kanjo-suji">
+                      <span
+                        className={`naka suji${chijimi(view.mainSellout)} ${view.mainSellout < 0 ? "akaji-ji" : "kuroji-ji"}`}
+                        aria-label={formatChobo(view.mainSellout).aria}
+                      >
+                        {formatChobo(view.mainSellout).text}
+                      </span>
+                      <span className="tani">円</span>
+                      <span
+                        className={`fuda ${view.mainSellout < 0 ? "fuda-akaji" : "fuda-kuroji"}`}
+                      >
+                        {view.mainSellout < 0 ? "赤字" : "黒字"}
+                      </span>
+                    </div>
+                    <p className="kanjo-hochu sai suji">
+                      完売で {formatChobo(view.mainSellout).text}円
+                    </p>
+                  </div>
+                  <div>
+                    <div className="ran">1冊あたり</div>
+                    <div className="kanjo-suji">
+                      {view.mainPerCopy === null ? (
+                        <span
+                          className="naka suji"
+                          style={{ color: "var(--sumi-2)" }}
+                        >
+                          ―
+                        </span>
+                      ) : (
+                        <>
+                          <span
+                            className={`naka suji ${view.mainPerCopy < 0 ? "akaji-ji" : "kuroji-ji"}`}
+                            aria-label={formatChobo(view.mainPerCopy).aria}
+                          >
+                            {formatChobo(view.mainPerCopy).text}
+                          </span>
+                          <span className="tani">円</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {view.neverProfits && (
+                <div
+                  className="fusen fusen-shu"
+                  style={{ marginTop: "var(--ma-2)" }}
+                >
+                  ※
+                  この条件では何部刷っても黒字になりません。頒価を上げるか、印刷費・委託料率を見直してください。
                 </div>
               )}
-            </ProfitChart>
-          </div>
 
-          {/* 表で見る（計算根拠の全数値開示・開いている間だけ表を組み立てる） */}
-          <div className="datatable-block">
-            <details onToggle={(e) => setTableOpen(e.currentTarget.open)}>
-              <summary>
-                表で見る（
-                {ready && selectedTier !== null
-                  ? `${tableStep(selectedTier.copies)}部`
-                  : "25部"}
-                刻みの損益）
-              </summary>
-              {tableOpen &&
-                (ready && selectedTier !== null && price !== null ? (
-                  <div className="table-scroll">
-                    <table className="data-table tabular">
-                      <thead>
-                        <tr>
-                          <th scope="col">頒布数</th>
-                          {seriesAll.map((s) => (
-                            <th key={s.id} scope="col">
-                              {s.name}
+              {/* 損益線図 */}
+              <div ref={senzuRef}>
+                <h3 className="shukei-komidashi">損益線図</h3>
+                <ProfitChart
+                  ready
+                  copies={view.copies}
+                  baseCost={view.baseCost}
+                  series={view.seriesAll}
+                  mainId={view.mainSeries?.id ?? null}
+                  breakEvenMain={view.neverProfits ? null : view.mainBreakEven}
+                  breakEvenExactMain={
+                    view.neverProfits ? null : view.mainBreakEvenExact
+                  }
+                  legend={legend}
+                  onSelectMain={selectMain}
+                  onToggleVisible={(id, visible) =>
+                    updateChannel(id, { visible })
+                  }
+                  ariaLabel={chartAria}
+                />
+              </div>
+
+              {/* 頒価の目安（横帯） */}
+              {view.range !== null &&
+                (() => {
+                  const r = view.range;
+                  const scaleMax = Math.max(r.at70, view.price) * 1.25;
+                  const pct = (v: number): number =>
+                    Math.min(100, Math.max(0, (v / scaleMax) * 100));
+                  const inRange =
+                    view.price >= r.sellout && view.price <= r.at70;
+                  return (
+                    <div id="meyasu">
+                      <h3 className="shukei-komidashi">頒価の目安</h3>
+                      <div className="meyasu-obi" aria-hidden="true">
+                        <div
+                          className="meyasu-nuri"
+                          style={{
+                            left: `${pct(r.sellout)}%`,
+                            width: `${Math.max(1, pct(r.at70) - pct(r.sellout))}%`,
+                          }}
+                        />
+                        <div
+                          className="meyasu-ima"
+                          style={{ left: `${pct(view.price)}%` }}
+                        />
+                      </div>
+                      <p className="sai suji" style={{ marginTop: "4px" }}>
+                        目安レンジ {r.sellout.toLocaleString("ja-JP")}〜
+                        {r.at70.toLocaleString("ja-JP")}
+                        円（完売で±0〜7割頒布で±0）。いまの頒価{" "}
+                        {view.price.toLocaleString("ja-JP")}円は
+                        {inRange
+                          ? "目安レンジ内"
+                          : view.price < r.sellout
+                            ? "目安レンジより低め"
+                            : "目安レンジより高め"}
+                        。
+                      </p>
+                    </div>
+                  );
+                })()}
+
+              {/* 配分プラン */}
+              {(view.plannedBlocked || view.allocation !== null) && (
+                <div>
+                  <h3 className="shukei-komidashi">配分プラン</h3>
+                  {view.plannedBlocked ? (
+                    <p className="sai" style={{ color: "var(--shu)" }}>
+                      予定部数を修正するまで計算できません（訂正が必要な行があります）
+                    </p>
+                  ) : (
+                    view.allocation !== null && (
+                      <div className="haibun-gyo">
+                        <span>
+                          {view.plans
+                            .map((p) => `${p.name} ${p.copies}部`)
+                            .join(" ＋ ")}{" "}
+                          →
+                        </span>
+                        <strong
+                          className={`suji ${view.allocation < 0 ? "akaji-ji" : "kuroji-ji"}`}
+                          style={{
+                            color:
+                              view.allocation < 0
+                                ? "var(--shu)"
+                                : "var(--kuroji)",
+                          }}
+                          aria-label={formatChobo(view.allocation).aria}
+                        >
+                          {formatChobo(view.allocation).text}
+                        </strong>
+                        <span
+                          className={`fuda ${view.allocation < 0 ? "fuda-akaji" : "fuda-kuroji"}`}
+                        >
+                          {view.allocation < 0 ? "赤字" : "黒字"}
+                        </span>
+                        {view.plannedTotal > view.copies && (
+                          <span className="fuda fuda-akaji">
+                            刷り部数 {view.copies}部 を超過
+                          </span>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+
+              {/* 表で見る（25部刻み） */}
+              <details
+                className="tatami"
+                style={{ marginTop: "var(--ma-3)" }}
+                onToggle={(e) => setTableOpen(e.currentTarget.open)}
+              >
+                <summary>
+                  表で見る（{tableStep(view.copies)}部刻みの損益）
+                </summary>
+                <div className="tatami-body">
+                  {tableOpen && (
+                    <div className="hyo-waku">
+                      <table className="hyo suji">
+                        <thead>
+                          <tr>
+                            <th scope="col" className="suji-col">
+                              頒布数（部）
                             </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(() => {
-                          // 刻み幅は行数が増えすぎないよう部数に応じて自動拡大（≤~40行）
-                          const step = tableStep(selectedTier.copies);
-                          const ks: number[] = [];
-                          for (let k = 0; k < selectedTier.copies; k += step)
-                            ks.push(k);
-                          ks.push(selectedTier.copies);
-                          return ks.map((k) => {
-                            const isBe =
-                              mainBreakEven !== null &&
-                              k >= mainBreakEven &&
-                              k - step < mainBreakEven;
-                            return (
-                              <tr
-                                key={k}
-                                className={isBe ? "is-breakeven" : undefined}
-                              >
-                                <td>{k}部</td>
-                                {seriesAll.map((s) => {
-                                  const v = profitAt(
-                                    k,
-                                    price,
-                                    s.params,
-                                    baseCost,
-                                  );
-                                  return (
-                                    <td
-                                      key={s.id}
-                                      className={v >= 0 ? "is-ok" : "is-err"}
-                                    >
-                                      {formatSignedYen(v)}
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            );
-                          });
-                        })()}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <p
-                    style={{ padding: "0 var(--sp-4) var(--sp-4)" }}
-                    className="field-hint"
-                  >
-                    入力が完了すると、部数ごとの損益を表で確認できます
-                  </p>
-                ))}
-            </details>
-          </div>
-        </div>
+                            {view.seriesAll.map((s) => (
+                              <th key={s.id} scope="col" className="suji-col">
+                                {s.name}（円）
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(() => {
+                            const step = tableStep(view.copies);
+                            const ks: number[] = [];
+                            for (let k = 0; k < view.copies; k += step)
+                              ks.push(k);
+                            ks.push(view.copies);
+                            return ks.map((k, ki) => {
+                              const isBe =
+                                view.mainBreakEven !== null &&
+                                k >= view.mainBreakEven &&
+                                k - step < view.mainBreakEven;
+                              const isLast = ki === ks.length - 1;
+                              return (
+                                <tr
+                                  key={k}
+                                  className={isLast ? "shime" : undefined}
+                                >
+                                  <td className="suji-col">
+                                    {k.toLocaleString("ja-JP")}
+                                    {isBe && (
+                                      <span className="fuda fuda-akaji">
+                                        分岐
+                                      </span>
+                                    )}
+                                  </td>
+                                  {view.seriesAll.map((s) => {
+                                    const v = profitAt(
+                                      k,
+                                      view.price,
+                                      s.params,
+                                      view.baseCost,
+                                    );
+                                    const c = formatChobo(v);
+                                    return (
+                                      <td
+                                        key={s.id}
+                                        className="suji-col"
+                                        style={
+                                          v < 0
+                                            ? { color: "var(--shu)" }
+                                            : undefined
+                                        }
+                                        aria-label={c.aria}
+                                      >
+                                        {c.text}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            });
+                          })()}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </details>
+            </div>
+          )}
+        </aside>
       </div>
 
-      {/* モバイル: 下端固定ミニ結果バー（タップでグラフへ） */}
+      {/* 勘定尻バー（モバイル固定・線図が視界内の間は退避） */}
       <button
         type="button"
-        className="mini-result tabular"
-        onClick={scrollToChart}
+        className={`kanjo-bar suji${barTaihi ? " is-taihi" : ""}`}
+        onClick={scrollToShukei}
       >
-        {ready ? (
+        {view !== null ? (
           <span>
-            {neverProfits || mainBreakEven === null
-              ? "黒字化なし"
-              : `分岐 ${mainBreakEven}部`}
-            {" ・ "}完売 {formatSignedYen(mainSellout)}
+            分岐{" "}
+            {view.neverProfits || view.mainBreakEven === null
+              ? "―"
+              : `${view.mainBreakEven.toLocaleString("ja-JP")}部`}
+            ｜完売 {formatChobo(view.mainSellout).text}円
           </span>
+        ) : errorList.length > 0 ? (
+          <span className="shu-ji">入力に訂正あり ▲</span>
         ) : (
-          <span className="mini-hint">入力を続けると損益が出ます</span>
+          <span>記帳がそろうと損益が出ます</span>
         )}
-        <span className="mini-arrow">グラフへ</span>
+        <span aria-hidden="true">↑</span>
       </button>
-    </div>
+      <div className="kanjo-bar-yohaku" aria-hidden="true" />
+    </>
   );
 }
