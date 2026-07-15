@@ -5,7 +5,7 @@
 export const SITE_URL = "https://ga-project.github.io/doujin-soneki/";
 
 /** GoatCounter（cookieless・秘密キー不要）のコード。publish 時に実コードへ差し替える。 */
-export const GOATCOUNTER_CODE = "__GC_CODE__";
+export const GOATCOUNTER_CODE = "doujin-soneki";
 
 /**
  * 解析タグを出力してよいか。プレースホルダのままでは壊れた URL へのリクエストを
