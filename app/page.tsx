@@ -11,6 +11,63 @@ export const metadata: Metadata = {
   alternates: { canonical: SITE_URL },
 };
 
+/**
+ * 問答（FAQ）の単一ソース。画面表示と構造化データ（FAQPage）を同じ配列から
+ * 生成し、両者が食い違わないようにする（検索結果に出す Q&A は画面と必ず一致）。
+ * q = 設問本文（丁番の接頭辞は表示側で付す）、a = 回答本文。
+ */
+const MONDOU: readonly { q: string; a: string }[] = [
+  {
+    q: "記帳したデータはどこに保存されますか",
+    a: "お使いのブラウザ（この端末）の中にだけ保存されます。サーバーには送信されません。ブラウザのデータを消去すると帳面も消えます。",
+  },
+  {
+    q: "委託の手数料はどう計算していますか",
+    a: "委託価格×料率＋定額が1冊ごとに引かれます。料率は各委託先の最新の案内に記載の値を記入してください。プリセットは公開情報にもとづく目安で、いつでも書き直せます。",
+  },
+  {
+    q: "印刷所の見積と合いません",
+    a: "オプション費用・送料は単価表に含めるか、第四丁の固定費に足してください。単価表は見積の数字をそのまま書き写すのが確実です。",
+  },
+  {
+    q: "カウンターは電波のない会場でも使えますか",
+    a: "一度ひらいたあとは、通信が切れても記帳は動き続け、端末に保存されます。ページの再読み込みには接続が要ります。",
+  },
+];
+
+/** 丁番の漢数字（問一・問二…）。表示ラベルにのみ使う。 */
+const CHOBAN = ["一", "二", "三", "四", "五", "六"] as const;
+
+/**
+ * 構造化データ（JSON-LD）。SoftwareApplication＝ツール本体、FAQPage＝上の問答。
+ * 検索エンジンにツールの性質と Q&A を伝え、リッチリザルトの対象にする。
+ * FAQPage の設問・回答は画面の問答（MONDOU）と同一物なので誇大表示にならない。
+ */
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "同人ソンエキ",
+      url: SITE_URL,
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "Web",
+      inLanguage: "ja",
+      description:
+        "同人誌の印刷費と委託手数料から損益分岐部数と手取りを計算し、即売会当日の頒布をカウントするツール。",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "JPY" },
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: MONDOU.map((item) => ({
+        "@type": "Question",
+        name: item.q,
+        acceptedAnswer: { "@type": "Answer", text: item.a },
+      })),
+    },
+  ],
+};
+
 /** 当日欄の挿絵: タリー画面の線画（罫線のみで描く・装飾）。 */
 function TojitsuSenga() {
   return (
@@ -86,6 +143,16 @@ function TojitsuSenga() {
 export default function Home() {
   return (
     <>
+      {/* 構造化データ（静的 export 時に HTML へ焼き込まれる）。
+          "<" を < に伏字化し、将来 FAQ 文言に "</script>" 等が入っても
+          script タグをブレイクアウトしないようにする（防御的措置）。 */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c"),
+        }}
+      />
+
       <a className="tobira" href="#honmon">
         本文へ飛ぶ
       </a>
@@ -169,36 +236,14 @@ export default function Home() {
         <div className="daicho">
           <section className="mondou" aria-labelledby="mondou-midashi">
             <h2 id="mondou-midashi">問答</h2>
-            <div className="mondou-kumi">
-              <p className="mondou-toi">
-                問一　記帳したデータはどこに保存されますか
-              </p>
-              <p className="mondou-kotae">
-                お使いのブラウザ（この端末）の中にだけ保存されます。サーバーには送信されません。ブラウザのデータを消去すると帳面も消えます。
-              </p>
-            </div>
-            <div className="mondou-kumi">
-              <p className="mondou-toi">
-                問二　委託の手数料はどう計算していますか
-              </p>
-              <p className="mondou-kotae">
-                委託価格×料率＋定額が1冊ごとに引かれます。料率は各委託先の最新の案内に記載の値を記入してください。プリセットは公開情報にもとづく目安で、いつでも書き直せます。
-              </p>
-            </div>
-            <div className="mondou-kumi">
-              <p className="mondou-toi">問三　印刷所の見積と合いません</p>
-              <p className="mondou-kotae">
-                オプション費用・送料は単価表に含めるか、第四丁の固定費に足してください。単価表は見積の数字をそのまま書き写すのが確実です。
-              </p>
-            </div>
-            <div className="mondou-kumi">
-              <p className="mondou-toi">
-                問四　カウンターは電波のない会場でも使えますか
-              </p>
-              <p className="mondou-kotae">
-                一度ひらいたあとは、通信が切れても記帳は動き続け、端末に保存されます。ページの再読み込みには接続が要ります。
-              </p>
-            </div>
+            {MONDOU.map((item, i) => (
+              <div className="mondou-kumi" key={item.q}>
+                <p className="mondou-toi">
+                  問{CHOBAN[i]}　{item.q}
+                </p>
+                <p className="mondou-kotae">{item.a}</p>
+              </div>
+            ))}
           </section>
         </div>
       </main>
