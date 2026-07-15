@@ -143,10 +143,14 @@ function TojitsuSenga() {
 export default function Home() {
   return (
     <>
-      {/* 構造化データ（静的 export 時に HTML へ焼き込まれる）。 */}
+      {/* 構造化データ（静的 export 時に HTML へ焼き込まれる）。
+          "<" を < に伏字化し、将来 FAQ 文言に "</script>" 等が入っても
+          script タグをブレイクアウトしないようにする（防御的措置）。 */}
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c"),
+        }}
       />
 
       <a className="tobira" href="#honmon">
