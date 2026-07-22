@@ -1,0 +1,1860 @@
+/* 同人ソンエキ — デザインシステム「朱墨の帳場」
+ *
+ * 本製品専用にゼロから構築したオリジナルのデザイン体系。テンプレート由来の
+ * スタイルは一切含まない。正はデザインブリーフ「朱墨の帳場」最終版。
+ *
+ * 視覚言語の四本柱:
+ *   1. 罫線ファースト — カード・影を廃し、太罫/細罫/枠罫/二重罫の「格」で構造を作る
+ *   2. 朱と墨 — 黒字=墨系・赤字=朱。朱は「赤字・警告・分岐・印判」の4用途限定（朱の予算制）
+ *   3. 数字第一主義 — 全数値 tabular・右揃え・3桁区切り。単位は原則欄見出しへ
+ *   4. 実用線図 — 統計年鑑の線図。ゼロ線が最強、赤字は朱の斜線ハッチ
+ *
+ * コントラスト比は全て WCAG 算定式による実測値（ブリーフ§2に根拠表）。
+ */
+
+/* =========================================================================
+ * 1. トークン — 昼帳（light）
+ * ========================================================================= */
+
+:root {
+  color-scheme: light;
+
+  /* 地紙 */
+  --kami: hsl(42 45% 96%); /* ページ背景 #F9F7F0 */
+  --kami-2: hsl(45 60% 99%); /* 記入面（入力欄・グラフ盤面） */
+  --kami-3: hsl(42 28% 90%); /* 欄見出し行・復元バー地 */
+
+  /* 墨 */
+  --sumi: hsl(220 20% 15%); /* 本文・数字・太罫（対kami 14.54） */
+  --sumi-2: hsl(220 10% 34%); /* 補注・単位（対kami 7.11） */
+  --sumi-hover: hsl(220 20% 22%); /* 主ボタン hover 地 */
+
+  /* 朱（赤字・警告・分岐・印判の4用途限定） */
+  --shu: hsl(8 70% 40%); /* 対kami 6.01 */
+  --shu-hade: hsl(8 78% 50%); /* 図形専用（対kami 4.06・テキスト禁止） */
+  --shu-hover: hsl(8 70% 46%);
+
+  /* 藍・系列色 */
+  --ai: hsl(215 60% 36%); /* リンク・focus・情報付箋（対kami 7.18） */
+  --aozumi: hsl(202 35% 26%); /* 青墨: 黒字数値・会場系列（対kami 8.94） */
+  --kobicha: hsl(28 55% 32%); /* 媚茶: 委託系列2（対kami 6.46） */
+  --kikyo: hsl(270 35% 42%); /* 桔梗: 委託系列3（対kami 6.75） */
+
+  /* 罫線 */
+  --keisen-waku: hsl(220 12% 46%); /* 枠罫: UI境界（対kami 4.60） */
+  --keisen-ito: hsl(40 14% 76%); /* 糸罫: 装飾行区切り（単独境界に使用禁止） */
+
+  /* semantic alias（テーマ間共有） */
+  --kuroji: var(--aozumi);
+  --akaji: var(--shu);
+
+  /* ゾーン淡（グラフ） */
+  --zone-akaji: hsl(8 70% 40% / 0.06);
+  --zone-kuroji: hsl(202 35% 26% / 0.07);
+  --hatch: hsl(8 78% 50% / 0.35);
+  --obi-meyasu: hsl(202 35% 26% / 0.2); /* 目安レンジ帯の塗り */
+
+  /* 書体 */
+  --kaku:
+    "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "BIZ UDGothic",
+    Meiryo, sans-serif;
+  --mincho: "Hiragino Mincho ProN", "Yu Mincho", "BIZ UDMincho", serif;
+
+  /* 字（サイズ） */
+  --ji-daiji: 44px;
+  --ji-chuji: 28px;
+  --ji-tally: clamp(64px, 18vw, 96px);
+  --ji-hyodai: 40px;
+  --ji-cho: 22px;
+  --ji-komidashi: 17px;
+  --ji-hon: 16px;
+  --ji-ran: 13px;
+  --ji-sai: 13px;
+
+  /* 間（ま）— 8px基調 */
+  --ma-05: 4px;
+  --ma-1: 8px;
+  --ma-2: 16px;
+  --ma-3: 24px;
+  --ma-4: 32px;
+  --ma-6: 48px;
+  --ma-8: 64px;
+
+  /* 角 — 帳面は直角 */
+  --kado-0: 0;
+  --kado-1: 2px;
+  --kado-in: 4px; /* /tally 角印のみ */
+
+  /* 罫線ショートハンド */
+  --rule-futo: 2px solid var(--sumi);
+  --rule-hoso: 1px solid var(--keisen-ito);
+  --rule-waku: 1px solid var(--keisen-waku);
+  --rule-niju: 3px double var(--sumi);
+
+  /* 影 — 2つだけ（浮き要素専用） */
+  --kage-ukibar:
+    0 -1px 0 var(--keisen-waku), 0 -6px 16px hsl(220 20% 15% / 0.12);
+  --kage-fuda: 0 2px 8px hsl(220 20% 15% / 0.16);
+
+  /* モーション */
+  --dur: 140ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+/* =========================================================================
+ * 1b. トークン — 夜帳（dark）。自動追従＋手動トグル（[data-theme]）優先。
+ *     値はブリーフ§2-2 の実測 AA 表と同一（2箇所に同値を書く）。
+ * ========================================================================= */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --kami: hsl(220 16% 10%);
+    --kami-2: hsl(220 14% 14%);
+    --kami-3: hsl(220 12% 19%);
+    --sumi: hsl(42 30% 90%);
+    --sumi-2: hsl(220 10% 72%);
+    --sumi-hover: hsl(42 30% 95%);
+    --shu: hsl(10 78% 64%);
+    --shu-hade: hsl(10 78% 64%);
+    --shu-hover: hsl(10 78% 70%);
+    --ai: hsl(214 72% 72%);
+    --aozumi: hsl(192 42% 62%);
+    --kobicha: hsl(30 55% 62%);
+    --kikyo: hsl(270 55% 78%);
+    --keisen-waku: hsl(220 8% 48%);
+    --keisen-ito: hsl(220 10% 28%);
+    --zone-akaji: hsl(10 78% 64% / 0.08);
+    --zone-kuroji: hsl(192 42% 62% / 0.09);
+    --hatch: hsl(10 78% 64% / 0.35);
+    --obi-meyasu: hsl(192 42% 62% / 0.25);
+    --kage-ukibar:
+      0 -1px 0 var(--keisen-waku), 0 -6px 16px hsl(220 20% 4% / 0.45);
+    --kage-fuda: 0 2px 8px hsl(220 20% 4% / 0.45);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --kami: hsl(220 16% 10%);
+  --kami-2: hsl(220 14% 14%);
+  --kami-3: hsl(220 12% 19%);
+  --sumi: hsl(42 30% 90%);
+  --sumi-2: hsl(220 10% 72%);
+  --sumi-hover: hsl(42 30% 95%);
+  --shu: hsl(10 78% 64%);
+  --shu-hade: hsl(10 78% 64%);
+  --shu-hover: hsl(10 78% 70%);
+  --ai: hsl(214 72% 72%);
+  --aozumi: hsl(192 42% 62%);
+  --kobicha: hsl(30 55% 62%);
+  --kikyo: hsl(270 55% 78%);
+  --keisen-waku: hsl(220 8% 48%);
+  --keisen-ito: hsl(220 10% 28%);
+  --zone-akaji: hsl(10 78% 64% / 0.08);
+  --zone-kuroji: hsl(192 42% 62% / 0.09);
+  --hatch: hsl(10 78% 64% / 0.35);
+  --obi-meyasu: hsl(192 42% 62% / 0.25);
+  --kage-ukibar:
+    0 -1px 0 var(--keisen-waku), 0 -6px 16px hsl(220 20% 4% / 0.45);
+  --kage-fuda: 0 2px 8px hsl(220 20% 4% / 0.45);
+}
+
+/* =========================================================================
+ * 2. ベース
+ * ========================================================================= */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--kami);
+  color: var(--sumi);
+  font-family: var(--kaku);
+  font-size: var(--ji-hon);
+  line-height: 1.8;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--ai);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+::selection {
+  background: var(--kami-3);
+  color: var(--sumi);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ai);
+  outline-offset: 2px;
+}
+
+img,
+svg {
+  max-width: 100%;
+  display: block;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* 数字の掟: 半角・tabular・3桁区切り（右揃えは文脈側で指定） */
+.suji {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* 読み上げ専用 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* skip-link（墨地・kami文字）。非フォーカス時は transform で確実に画面外へ */
+.tobira {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  background: var(--sumi);
+  color: var(--kami);
+  padding: 12px 20px;
+  border-radius: var(--kado-1);
+  text-decoration: none;
+  font-weight: 600;
+  transform: translateY(calc(-100% - 16px));
+}
+.tobira:focus {
+  transform: none;
+}
+
+/* sticky ヘッダは無い（帳頭は static）が、アンカー着地は帳頭ぶん逃がす */
+html {
+  scroll-padding-top: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* =========================================================================
+ * 3. ボタン（判・罫）
+ * ========================================================================= */
+
+.bt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ma-1);
+  min-height: 44px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: var(--kado-1);
+  font-family: var(--kaku);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color var(--dur) var(--ease);
+}
+.bt:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* 主（墨判）— 1画面1つ */
+.bt-main {
+  background: var(--sumi);
+  color: var(--kami);
+}
+.bt-main:hover:not(:disabled) {
+  background: var(--sumi-hover);
+}
+
+/* 従（白紙罫） */
+.bt-sub {
+  background: transparent;
+  border: var(--rule-waku);
+  color: var(--sumi);
+}
+.bt-sub:hover:not(:disabled) {
+  background: var(--kami-3);
+}
+
+/* 朱（/tally 角印の基底・破壊/強操作） */
+.bt-shu {
+  background: var(--shu);
+  color: var(--kami);
+}
+.bt-shu:hover:not(:disabled) {
+  background: var(--shu-hover);
+}
+
+/* 行内小（行を足す・削除） */
+.bt-sm {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: var(--ji-sai);
+}
+@media (pointer: coarse) {
+  .bt-sm {
+    min-height: 44px;
+  }
+}
+
+.bt:disabled {
+  background: var(--kami-3);
+  border-color: var(--kami-3);
+  color: var(--sumi-2);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* =========================================================================
+ * 4. 入力欄（記入欄）
+ * ========================================================================= */
+
+.kinyu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 欄見出し */
+.ran {
+  font-size: var(--ji-ran);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--sumi-2);
+}
+
+.kinyu input[type="text"],
+.kinyu input[type="number"],
+input.kinyu-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--kami-2);
+  border: var(--rule-waku);
+  border-radius: var(--kado-1);
+  color: var(--sumi);
+  font-family: var(--kaku);
+  font-size: 1rem; /* iOS ズーム防止（16px 未満禁止） */
+  line-height: 1.2;
+}
+input.suji,
+.kinyu input[type="number"] {
+  text-align: right;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+.kinyu input::placeholder {
+  color: var(--sumi-2);
+  opacity: 1;
+}
+.kinyu input:focus-visible,
+input.kinyu-input:focus-visible {
+  outline: 2px solid var(--ai);
+  outline-offset: 2px;
+}
+.kinyu input[aria-invalid="true"],
+input.kinyu-input[aria-invalid="true"] {
+  border: 2px solid var(--shu);
+}
+
+/* 欄内右端の後置き単位 */
+.kinyu-tani {
+  display: flex;
+  align-items: center;
+  gap: var(--ma-1);
+}
+.kinyu-tani input {
+  flex: 1;
+  min-width: 0;
+}
+.kinyu-tani .tani {
+  flex-shrink: 0;
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+}
+
+/* 訂正（エラー文） */
+.teisei {
+  font-size: var(--ji-sai);
+  line-height: 1.6;
+  color: var(--shu);
+  margin-top: 6px;
+}
+
+/* 細字（補注・但し書き） */
+.sai {
+  font-size: var(--ji-sai);
+  line-height: 1.6;
+  color: var(--sumi-2);
+}
+
+/* =========================================================================
+ * 5. 表（帳票）
+ * ========================================================================= */
+
+.hyo-waku {
+  overflow-x: auto; /* 本文横スクロールを起こさない帳票コンテナ */
+}
+
+.hyo {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ji-hon);
+}
+.hyo th {
+  background: var(--kami-3);
+  font-size: var(--ji-ran);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--sumi-2);
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: var(--rule-waku);
+  white-space: nowrap;
+}
+.hyo td {
+  height: 44px;
+  padding: 4px 12px;
+  border-bottom: var(--rule-hoso);
+  vertical-align: middle;
+}
+.hyo th.suji-col,
+.hyo td.suji-col {
+  text-align: right;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+/* 締め行（合計） */
+.hyo tr.shime td {
+  border-top: var(--rule-waku);
+  border-bottom: var(--rule-niju);
+  font-weight: 600;
+}
+/* 「この部数で刷る」選択行 */
+.hyo tr.is-erabi td {
+  background: hsl(8 70% 40% / 0.04);
+}
+.hyo tr.is-erabi td:first-child {
+  box-shadow: inset 3px 0 0 var(--shu);
+}
+/* 分岐を跨ぐ行の朱小札用 */
+.hyo td .fuda {
+  margin-left: var(--ma-1);
+}
+
+/* 朱ラジオ（選択の印。実体の input を視覚置換） */
+.shu-radio {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  cursor: pointer;
+}
+.shu-radio input {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: var(--rule-waku);
+  border-radius: 50%;
+  background: var(--kami-2);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.shu-radio input:checked {
+  border-color: var(--shu);
+}
+.shu-radio input:checked::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--shu);
+}
+.shu-radio input:focus-visible {
+  outline: 2px solid var(--ai);
+  outline-offset: 2px;
+}
+.shu-radio input:disabled {
+  border-color: var(--keisen-ito);
+  cursor: not-allowed;
+}
+
+/* チェック（グラフに表示 等） */
+.sumi-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ma-1);
+  min-height: 44px;
+  cursor: pointer;
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+}
+.sumi-check input {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: var(--rule-waku);
+  border-radius: var(--kado-1);
+  background: var(--kami-2);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.sumi-check input:checked {
+  background: var(--sumi);
+  border-color: var(--sumi);
+}
+.sumi-check input:checked::after {
+  content: "";
+  width: 10px;
+  height: 6px;
+  border-left: 2px solid var(--kami);
+  border-bottom: 2px solid var(--kami);
+  transform: translateY(-1px) rotate(-45deg);
+}
+.sumi-check input:focus-visible {
+  outline: 2px solid var(--ai);
+  outline-offset: 2px;
+}
+.sumi-check input:disabled {
+  border-color: var(--keisen-ito);
+  cursor: not-allowed;
+}
+
+/* 記入方法の小トグル（単価⇄総額） */
+.kubun-toggle {
+  display: inline-flex;
+  border: var(--rule-waku);
+  border-radius: var(--kado-1);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.kubun-toggle button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--sumi-2);
+  font-size: var(--ji-ran);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.kubun-toggle button + button {
+  border-left: var(--rule-waku);
+}
+.kubun-toggle button[aria-pressed="true"] {
+  background: var(--sumi);
+  color: var(--kami);
+}
+
+/* 行を足す（破線枠罫の行ボタン） */
+.bt-gyotasu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+  background: transparent;
+  border: 1px dashed var(--keisen-waku);
+  border-radius: var(--kado-1);
+  color: var(--sumi);
+  font-size: var(--ji-hon);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.bt-gyotasu:hover {
+  background: var(--kami-3);
+}
+
+/* =========================================================================
+ * 6. ツメ（チップ）・バッジ・札・付箋
+ * ========================================================================= */
+
+.tsume {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ma-1);
+  min-height: 44px;
+  padding: 0 16px;
+  background: transparent;
+  border: var(--rule-waku);
+  border-radius: var(--kado-1);
+  color: var(--sumi);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--dur) var(--ease);
+}
+.tsume:hover:not(:disabled):not(.is-erabi) {
+  background: var(--kami-3);
+}
+.tsume.is-erabi,
+.tsume[aria-pressed="true"] {
+  background: var(--sumi);
+  border-color: var(--sumi);
+  color: var(--kami);
+}
+.tsume:disabled {
+  border-color: var(--keisen-ito);
+  color: var(--sumi-2);
+  cursor: not-allowed;
+}
+
+/* 見本バッジ（朱の角印様式・静的回転） */
+.mihon {
+  display: inline-block;
+  border: 1.5px solid var(--shu);
+  border-radius: var(--kado-1);
+  color: var(--shu);
+  font-family: var(--kaku);
+  font-size: var(--ji-ran);
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  padding: 2px 8px;
+  transform: rotate(-2deg);
+}
+/* 丁見出しの右肩の見本印（スクロール中も見本値と分かるように） */
+.cho-midashi .mihon {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* 状態札（分岐・完売・黒字・赤字・検算中） */
+.fuda {
+  display: inline-block;
+  border: 1px solid var(--sumi);
+  border-radius: var(--kado-1);
+  background: var(--kami-2);
+  color: var(--sumi);
+  font-size: var(--ji-sai);
+  line-height: 1.4;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.fuda-kuroji {
+  border-color: var(--kuroji);
+  color: var(--kuroji);
+}
+.fuda-akaji {
+  border-color: var(--shu);
+  color: var(--shu);
+}
+
+/* 付箋（アラート）。左辺3px縦罫・角丸なし */
+.fusen {
+  background: var(--kami-2);
+  border-left: 3px solid var(--ai);
+  padding: 12px 16px;
+  font-size: var(--ji-hon);
+  line-height: 1.8;
+}
+.fusen-shu {
+  border-left-color: var(--shu);
+  background: hsl(8 70% 40% / 0.08);
+}
+.fusen a {
+  color: var(--ai);
+}
+.fusen ul {
+  margin: 4px 0 0;
+  padding-left: 1.2em;
+}
+
+/* =========================================================================
+ * 7. ページ骨格（/）
+ * ========================================================================= */
+
+.daicho {
+  max-width: 1120px;
+  margin-inline: auto;
+  padding-inline: 24px;
+}
+@media (max-width: 719.98px) {
+  .daicho {
+    padding-inline: 16px;
+  }
+}
+
+/* 帳頭バー（static・下=枠罫） */
+.chogashira {
+  border-bottom: var(--rule-waku);
+}
+.chogashira-uchi {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ma-2);
+}
+@media (max-width: 719.98px) {
+  .chogashira-uchi {
+    height: 48px;
+  }
+}
+.daimei {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ma-1);
+  font-family: var(--mincho);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--sumi);
+  text-decoration: none;
+}
+.daimei-in {
+  color: var(--shu);
+  font-size: 14px;
+}
+.chogashira a.migi {
+  font-size: var(--ji-hon);
+}
+
+/* 罫線区切り */
+.kugiri-futo {
+  border: 0;
+  border-top: var(--rule-futo);
+  margin: 0;
+}
+.kugiri-hoso {
+  border: 0;
+  border-top: var(--rule-hoso);
+  margin: 0;
+}
+
+/* 表紙帯（縦書き表題 + L字視線） */
+.hyoshi {
+  padding: 64px 0 48px;
+  display: flex;
+  gap: var(--ma-4);
+  align-items: stretch;
+}
+.hyoshi-tate {
+  writing-mode: vertical-rl;
+  width: 88px;
+  flex-shrink: 0;
+  border-right: var(--rule-waku);
+  padding-right: var(--ma-3);
+  font-family: var(--mincho);
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--sumi);
+}
+.hyoshi-yoko {
+  flex: 1;
+  min-width: 0;
+}
+.hyoshi h1 {
+  font-family: var(--mincho);
+  font-size: var(--ji-hyodai);
+  line-height: 1.3;
+  font-weight: 600;
+}
+.hyoshi-lead {
+  margin-top: var(--ma-2);
+  font-size: 18px;
+  color: var(--sumi-2);
+  max-width: 36em;
+}
+.hyoshi-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ma-2);
+  margin-top: var(--ma-3);
+}
+.shinrai {
+  margin-top: var(--ma-2);
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+  display: flex;
+  align-items: baseline;
+  gap: var(--ma-1);
+}
+.shinrai::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ai);
+  flex-shrink: 0;
+  transform: translateY(-3px);
+}
+@media (max-width: 719.98px) {
+  .hyoshi {
+    padding: 40px 0 32px;
+    display: block;
+  }
+  .hyoshi-tate {
+    display: none; /* モバイルは縦書きを使わない（ブリーフ§3-2） */
+  }
+  .hyoshi h1 {
+    font-size: 28px;
+  }
+  .hyoshi-lead {
+    font-size: 16px;
+  }
+  .hyoshi-cta .bt {
+    width: 100%;
+  }
+}
+
+/* 帳面グリッド（ツメ列48 / 記入欄1fr / 集計欄424、検算: 48+24+600+24+424=1120） */
+.chomen {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 424px;
+  column-gap: 24px;
+  padding: var(--ma-4) 0 var(--ma-6);
+}
+.tsume-retsu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ma-3);
+  position: sticky;
+  top: 24px;
+  align-self: start;
+}
+.tsume-ban {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: var(--rule-waku);
+  border-radius: var(--kado-0);
+  color: var(--sumi);
+  font-family: var(--mincho);
+  font-size: 17px;
+  text-decoration: none;
+}
+.tsume-ban:hover {
+  background: var(--kami-3);
+}
+.kinyu-ran {
+  min-width: 0;
+}
+.shukei-ran {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  min-width: 0;
+}
+@media (max-width: 1023.98px) {
+  .chomen {
+    display: block;
+    padding: var(--ma-3) 0 var(--ma-6);
+  }
+  .tsume-retsu {
+    display: none; /* モバイルはインライン見出し（漢数字+縦棒）で代替 */
+  }
+  .shukei-ran {
+    position: static;
+    margin-top: var(--ma-4);
+    padding-top: var(--ma-3);
+    border-top: var(--rule-futo);
+  }
+}
+
+/* 丁（セクション） */
+.cho {
+  padding: var(--ma-3) 0;
+}
+.cho + .cho {
+  border-top: var(--rule-hoso);
+}
+.cho-midashi {
+  font-family: var(--mincho);
+  font-size: var(--ji-cho);
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: var(--ma-2);
+}
+.cho-midashi .kansuji {
+  color: var(--sumi-2);
+}
+.cho-midashi .kansuji::after {
+  content: "｜";
+  color: var(--keisen-waku);
+}
+.cho-hosoku {
+  margin-top: var(--ma-05);
+}
+.cho-body {
+  margin-top: var(--ma-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ma-2);
+}
+
+/* 委託の記入欄（枠罫の小型帳票） */
+.itaku-hyo {
+  border: var(--rule-waku);
+  border-radius: var(--kado-0);
+}
+.itaku-hyo.is-shu {
+  box-shadow: inset 3px 0 0 var(--shu);
+}
+.itaku-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ma-1);
+  padding: 8px 12px;
+  background: var(--kami-3);
+  border-bottom: var(--rule-waku);
+}
+.itaku-head input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 8px;
+  background: var(--kami-2);
+  border: var(--rule-waku);
+  border-radius: var(--kado-1);
+  font-size: 1rem;
+  color: var(--sumi);
+}
+.itaku-body {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 12px;
+}
+.itaku-ashi {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--ma-2);
+  padding: 0 12px 10px;
+}
+.itaku-chu {
+  padding: 0 12px 12px;
+}
+.tsume-obi {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ma-1);
+}
+
+/* 系列色の見本（線種は凡例側・ここでは色のみ） */
+.iro-mihon {
+  display: inline-block;
+  width: 14px;
+  height: 4px;
+  flex-shrink: 0;
+}
+.iro-aozumi {
+  background: var(--aozumi);
+}
+.iro-ai {
+  background: var(--ai);
+}
+.iro-kobicha {
+  background: var(--kobicha);
+}
+.iro-kikyo {
+  background: var(--kikyo);
+}
+
+/* 折り畳み（第四丁 固定費・表で見る） */
+details.tatami > summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--ma-1);
+  font-weight: 600;
+  list-style: none;
+}
+details.tatami > summary::-webkit-details-marker {
+  display: none;
+}
+details.tatami > summary::before {
+  content: "▸";
+  color: var(--sumi-2);
+  transition: transform var(--dur) var(--ease);
+}
+details.tatami[open] > summary::before {
+  transform: rotate(90deg);
+}
+details.tatami > .tatami-body {
+  padding: var(--ma-1) 0 var(--ma-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ma-2);
+}
+
+/* =========================================================================
+ * 8. 勘定尻（KPI 1+2）・集計欄
+ * ========================================================================= */
+
+.kanjo-jiri {
+  border-bottom: var(--rule-niju); /* 帳簿の締め */
+  padding-bottom: var(--ma-2);
+}
+.kanjo-kashira {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ma-1);
+}
+.kanjo-dai {
+  padding: var(--ma-1) 0 var(--ma-2);
+}
+.kanjo-fuku {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.kanjo-fuku > div + div {
+  border-left: var(--rule-waku);
+  padding-left: var(--ma-2);
+}
+.kanjo-fuku > div {
+  padding-right: var(--ma-2);
+  min-width: 0;
+}
+.kanjo-suji {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.kanjo-suji .oki {
+  font-size: var(--ji-daiji);
+  line-height: 1.1;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+.kanjo-suji .naka {
+  font-size: var(--ji-chuji);
+  line-height: 1.2;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+/* 桁あふれの段階縮小（8桁以上で該当セルのみ） */
+.kanjo-suji .oki.chijimi {
+  font-size: 36px;
+}
+.kanjo-suji .naka.chijimi {
+  font-size: 24px;
+}
+.kanjo-suji .tani {
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+}
+.kanjo-suji .kuroji-ji {
+  color: var(--sumi);
+}
+.kanjo-suji .akaji-ji {
+  color: var(--shu);
+}
+.kanjo-hochu {
+  margin-top: 2px;
+}
+@media (max-width: 1023.98px) {
+  .kanjo-suji .oki {
+    font-size: 32px;
+  }
+  .kanjo-suji .naka {
+    font-size: 24px;
+  }
+}
+
+/* 検算中（直前有効値の保持表示） */
+.kensanchu {
+  opacity: 0.45;
+}
+
+/* 集計欄の小見出し */
+.shukei-komidashi {
+  font-size: var(--ji-komidashi);
+  font-weight: 600;
+  margin: var(--ma-3) 0 var(--ma-1);
+}
+
+/* =========================================================================
+ * 9. 損益線図（実用線図）
+ * ========================================================================= */
+
+.senzu-waku {
+  border: var(--rule-waku);
+  background: var(--kami-2);
+}
+.senzu-waku:focus-visible {
+  outline: 2px solid var(--ai);
+  outline-offset: 2px;
+}
+.senzu-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  touch-action: pan-y;
+}
+/* 値変更時の線の補間（reduced-motion では即時） */
+.senzu-line {
+  transition: d var(--dur) var(--ease);
+  fill: none;
+}
+
+/* 凡例（盤面上部1行・折返し可） */
+.hanrei {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--ma-2);
+  align-items: center;
+  margin-bottom: var(--ma-1);
+}
+.hanrei-kumi {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  font-size: var(--ji-sai);
+}
+.hanrei-sen {
+  width: 24px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.hanrei .shu-radio,
+.hanrei .sumi-check {
+  min-height: 44px;
+}
+.hanrei .shu-radio {
+  width: auto;
+  min-width: 44px; /* タッチヒット幅 44px を確保 */
+  justify-content: center;
+  gap: 4px;
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+}
+
+/* 読取札（desktop: 盤面右上固定。カーソル追従させない＝視線が揺れない） */
+.yomitori-fuda {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--kami-2);
+  border: var(--rule-waku);
+  box-shadow: var(--kage-fuda);
+  padding: 8px 12px;
+  font-size: var(--ji-sai);
+  line-height: 1.6;
+  min-width: 132px;
+  pointer-events: none;
+}
+.yomitori-fuda .yomi-kashira {
+  font-weight: 600;
+  border-bottom: var(--rule-hoso);
+  padding-bottom: 2px;
+  margin-bottom: 2px;
+}
+.yomitori-fuda .yomi-gyo {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ma-2);
+}
+.yomitori-fuda .akaji-ji {
+  color: var(--shu);
+}
+
+/* 読取帯（mobile: 盤面直下の固定読み・指の遮蔽回避） */
+.yomitori-obi {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 var(--ma-2);
+  font-size: var(--ji-sai);
+  padding: 4px 8px;
+  border: var(--rule-waku);
+  border-top: 0;
+  background: var(--kami-2);
+}
+@media (min-width: 1024px) {
+  .yomitori-obi {
+    display: none;
+  }
+}
+@media (max-width: 1023.98px) {
+  .yomitori-fuda {
+    display: none;
+  }
+}
+
+/* 目安レンジ帯 */
+.meyasu-obi {
+  position: relative;
+  height: 32px;
+  border: var(--rule-waku);
+  background: var(--kami-2);
+}
+.meyasu-nuri {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--obi-meyasu);
+}
+.meyasu-ima {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 3px;
+  background: var(--sumi);
+}
+
+/* 配分プランの帳票行 */
+.haibun-gyo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ma-1);
+  padding: var(--ma-1) 0;
+  border-bottom: var(--rule-hoso);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* =========================================================================
+ * 10. 勘定尻バー（モバイル固定・墨地反転）
+ * ========================================================================= */
+
+.kanjo-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  min-height: calc(56px + env(safe-area-inset-bottom));
+  padding: 8px 20px calc(8px + env(safe-area-inset-bottom));
+  background: var(--sumi);
+  color: var(--kami);
+  box-shadow: var(--kage-ukibar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ma-2);
+  width: 100%;
+  border: 0;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+  cursor: pointer;
+  text-align: left;
+  transition: transform var(--dur) var(--ease);
+}
+:root[data-theme="dark"] .kanjo-bar {
+  background: var(--kami-3);
+  color: var(--sumi);
+  border-top: 2px solid var(--shu);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .kanjo-bar {
+    background: var(--kami-3);
+    color: var(--sumi);
+    border-top: 2px solid var(--shu);
+  }
+}
+.kanjo-bar.is-taihi {
+  transform: translateY(110%);
+}
+/* 墨地の上でも読める明るい朱（固定値・両テーマ共通）。
+ * 実測: 光（墨地 hsl(220 20% 15%)）5.65 / 夜（kami-3 地 hsl(220 12% 19%)）4.89 — AA 充足 */
+.kanjo-bar .shu-ji {
+  color: hsl(10 78% 66%);
+}
+/* 検算中の旧値の淡表示（§7 と同じ扱い）。集計欄の .45 は明るい地紙上の値であり、
+ * 墨地のバー（17px 通常）では 0.6 が AA の下限側。合成後実測: 光 6.13 / 夜 5.05 */
+.kanjo-bar .kensan-usui {
+  opacity: 0.6;
+}
+@media (min-width: 1024px) {
+  .kanjo-bar {
+    display: none;
+  }
+}
+@media (max-width: 1023.98px) {
+  .kanjo-bar-yohaku {
+    height: 72px;
+  }
+}
+
+/* =========================================================================
+ * 11. 当日欄・但し書き・問答・奥付
+ * ========================================================================= */
+
+.tojitsu {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ma-4);
+  align-items: center;
+  padding: var(--ma-6) 0;
+}
+@media (max-width: 719.98px) {
+  .tojitsu {
+    display: block;
+  }
+  .tojitsu-e {
+    margin-top: var(--ma-3);
+  }
+}
+.tojitsu h2 {
+  font-family: var(--mincho);
+  font-size: var(--ji-cho);
+}
+.tojitsu-e svg {
+  width: 100%;
+  height: auto;
+}
+
+.tadashigaki {
+  max-width: 640px;
+  padding: var(--ma-4) 0;
+}
+
+.mondou {
+  padding: var(--ma-4) 0 var(--ma-6);
+}
+.mondou h2 {
+  font-family: var(--mincho);
+  font-size: var(--ji-cho);
+  margin-bottom: var(--ma-2);
+}
+.mondou-kumi {
+  padding: var(--ma-2) 0;
+}
+.mondou-kumi + .mondou-kumi {
+  border-top: var(--rule-hoso);
+}
+.mondou-toi {
+  font-size: var(--ji-komidashi);
+  font-weight: 600;
+}
+.mondou-kotae {
+  margin-top: var(--ma-05);
+  color: var(--sumi-2);
+  display: flex;
+  gap: var(--ma-1);
+}
+.mondou-kotae::before {
+  content: "答";
+  color: var(--sumi);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.okuzuke {
+  text-align: center;
+  padding: var(--ma-4) 0 var(--ma-6);
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+}
+.okuzuke a {
+  color: var(--sumi-2);
+}
+.okuzuke a:hover {
+  color: var(--sumi);
+}
+
+/* 復元バー */
+.fukugen {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ma-1) var(--ma-2);
+  min-height: 48px;
+  background: var(--kami-3);
+  border-left: 3px solid var(--ai);
+  padding: 8px 16px;
+  font-size: var(--ji-hon);
+}
+.fukugen .migiyose {
+  margin-left: auto;
+  display: flex;
+  gap: var(--ma-1);
+  align-items: center;
+}
+
+/* 空の帳票（第二丁 空状態） */
+.karacho {
+  padding: var(--ma-2) 0;
+}
+.karacho-sen {
+  height: 44px;
+  border-bottom: var(--rule-hoso);
+}
+.karacho-moji {
+  text-align: center;
+  padding: var(--ma-2) 0;
+  color: var(--sumi-2);
+  font-size: var(--ji-sai);
+}
+
+/* =========================================================================
+ * 12. /tally（帳場の押印面）
+ * ========================================================================= */
+
+.tally-men {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  max-width: 560px;
+  margin-inline: auto;
+  padding-inline: 16px;
+}
+.tally-gashira {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ma-2);
+  border-bottom: var(--rule-waku);
+}
+.tally-gashira .modoru {
+  font-size: var(--ji-hon);
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.tally-gashira .dai {
+  font-family: var(--mincho);
+  font-weight: 600;
+}
+
+/* 金額スイッチ（枠罫トラック＋墨ノブ）。帳面の意匠に合わせて直角系、
+ * ON 時はノブ（判）に「入」を刻む */
+.kingaku-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ma-1);
+  min-height: 44px;
+  cursor: pointer;
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+}
+.kingaku-switch input {
+  appearance: none;
+  width: 44px;
+  height: 24px;
+  margin: 0;
+  border: var(--rule-waku);
+  border-radius: var(--kado-1);
+  background: var(--kami-2);
+  position: relative;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.kingaku-switch input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 1px;
+  background: var(--sumi);
+  color: var(--kami);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  transition: transform var(--dur) var(--ease);
+}
+.kingaku-switch input:checked {
+  background: var(--kami-3);
+}
+.kingaku-switch input:checked::after {
+  content: "入";
+  transform: translateX(20px);
+}
+.kingaku-switch input:focus-visible {
+  outline: 2px solid var(--ai);
+  outline-offset: 2px;
+}
+
+/* ツメ帯（横スクロール・端フェード） */
+.tsume-tai {
+  flex-shrink: 0;
+  display: flex;
+  gap: var(--ma-1);
+  overflow-x: auto;
+  padding: 8px 0;
+  min-height: 60px;
+  align-items: center;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 0,
+    #000 8px,
+    #000 calc(100% - 8px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0,
+    #000 8px,
+    #000 calc(100% - 8px),
+    transparent 100%
+  );
+}
+.tsume-tai::-webkit-scrollbar {
+  display: none;
+}
+
+/* 勘定面（上半分） */
+.kanjo-men {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--ma-1);
+  padding: var(--ma-2) 0;
+  position: relative;
+}
+.tally-kazoe {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ma-1);
+  justify-content: center;
+}
+.tally-kazoe .mae {
+  font-size: var(--ji-komidashi);
+  color: var(--sumi-2);
+}
+.tally-kazoe .kazu {
+  font-size: var(--ji-tally);
+  line-height: 1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.tally-zan {
+  font-size: var(--ji-chuji);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+/* 残りわずか・現在損益マイナス等の朱文字（/tally 全域で使う汎用クラス） */
+.wazuka {
+  color: var(--shu);
+}
+.tally-shokei {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+.tally-sosa {
+  display: flex;
+  gap: var(--ma-2);
+  justify-content: center;
+  margin-top: var(--ma-2);
+  flex-wrap: wrap;
+}
+
+/* 数を修正ステッパー */
+.suteppa {
+  display: flex;
+  gap: var(--ma-1);
+  align-items: center;
+  justify-content: center;
+  margin-top: var(--ma-1);
+}
+.suteppa .bt {
+  min-width: 44px;
+  padding: 0 12px;
+}
+.suteppa .ima {
+  min-width: 72px;
+  text-align: center;
+  font-size: var(--ji-chuji);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* 完売御礼印（朱・二重丸枠・静的回転） */
+.kanbai-in {
+  position: absolute;
+  top: 8%;
+  left: 50%;
+  transform: translateX(-50%) rotate(-8deg);
+  font-family: var(--mincho);
+  font-size: 32px;
+  font-weight: 600;
+  color: var(--shu);
+  border: 2px solid var(--shu);
+  border-radius: 50%;
+  padding: 20px 16px;
+  box-shadow:
+    inset 0 0 0 3px var(--kami),
+    inset 0 0 0 4px var(--shu);
+  background: transparent;
+  white-space: nowrap;
+  animation: in-osu 180ms var(--ease);
+  pointer-events: none;
+}
+@keyframes in-osu {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 押印面（下部固定・不感帯24px以上） */
+.oshiin-men {
+  flex-shrink: 0;
+  padding: 24px 0 calc(24px + env(safe-area-inset-bottom));
+}
+
+/* ＋1 角印ボタン */
+.oshiin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  height: 38vh;
+  min-height: 180px;
+  background: var(--shu);
+  color: var(--kami);
+  border: 0;
+  border-radius: var(--kado-in);
+  cursor: pointer;
+  position: relative;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  transition:
+    background-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+/* 印影の二重縁 */
+.oshiin::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border: 3px solid currentColor;
+  opacity: 0.32;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.oshiin::after {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  border: 1px solid currentColor;
+  opacity: 0.5;
+  border-radius: 1px;
+  pointer-events: none;
+}
+.oshiin .osu-kazu {
+  font-size: 48px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+.oshiin .osu-ji {
+  font-size: 17px;
+  font-weight: 600;
+}
+.oshiin:active:not(:disabled) {
+  transform: scale(0.985);
+  filter: brightness(0.92);
+}
+.oshiin:disabled {
+  background: var(--kami-3);
+  color: var(--sumi-2);
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oshiin:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* 状態行 */
+.tally-jotai {
+  flex-shrink: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ma-1);
+  font-size: var(--ji-sai);
+  color: var(--sumi-2);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tally-jotai::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--aozumi);
+  flex-shrink: 0;
+}
+.tally-jotai.is-offline::before {
+  background: var(--sumi-2);
+}
+
+/* ツメ追加のインライン展開 */
+.tsuika-ran {
+  border: var(--rule-waku);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ma-2);
+  margin-bottom: var(--ma-1);
+}
+.tsuika-ran .narabi {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ma-2);
+}
+
+/* 帳面の整理（編集パネル） */
+.seiri {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ma-2);
+  overflow-y: auto;
+  padding: var(--ma-2) 0;
+}
+.seiri h2 {
+  font-family: var(--mincho);
+  font-size: var(--ji-cho);
+}
+.seiri-gyo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ma-1);
+  align-items: flex-end;
+  padding-bottom: var(--ma-2);
+  border-bottom: var(--rule-hoso);
+}
+.seiri-gyo .kinyu-na {
+  flex: 2 1 10rem;
+}
+.seiri-gyo .kinyu-su {
+  flex: 1 1 5rem;
+}
+.bt-kesu {
+  min-width: 44px;
+  min-height: 44px;
+  background: transparent;
+  border: 0;
+  color: var(--sumi-2);
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: var(--kado-1);
+}
+.bt-kesu:hover:not(:disabled) {
+  color: var(--shu);
+  background: var(--kami-3);
+}
+.bt-kesu:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.shu-moji-bt {
+  background: none;
+  border: 0;
+  color: var(--shu);
+  font-size: var(--ji-hon);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  min-height: 44px;
+  cursor: pointer;
+  padding: 0 8px;
+}
+
+/* =========================================================================
+ * 13. 読み物（/terms /privacy）
+ * ========================================================================= */
+
+.yomimono {
+  max-width: 680px;
+  margin-inline: auto;
+  padding: var(--ma-6) 24px var(--ma-8);
+}
+@media (max-width: 719.98px) {
+  .yomimono {
+    padding-inline: 16px;
+  }
+}
+.yomimono h1 {
+  font-family: var(--mincho);
+  font-size: 28px;
+  padding-bottom: var(--ma-2);
+  border-bottom: var(--rule-futo);
+}
+.yomimono h2 {
+  font-size: var(--ji-komidashi);
+  margin-top: var(--ma-4);
+}
+.yomimono p {
+  margin-top: var(--ma-1);
+  line-height: 1.8;
+}
+.yomimono .okuzuke {
+  margin-top: var(--ma-6);
+  border-top: var(--rule-hoso);
+}
