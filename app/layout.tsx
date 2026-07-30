@@ -33,6 +33,22 @@ export const metadata: Metadata = {
     locale: "ja_JP",
     url: SITE_URL,
     siteName: "同人ソンエキ",
+    // 共有時のカード画像。製品のデザインシステム「朱墨の帳場」で作った 1200×630。
+    // metadataBase 相対だと Pages のサブパス配信で解決がぶれるため、絶対 URL で固定する。
+    images: [
+      {
+        url: `${SITE_URL}og.png`,
+        width: 1200,
+        height: 630,
+        alt: "同人ソンエキ — 同人誌の損益分岐シミュレータと頒布カウンター",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: [`${SITE_URL}og.png`],
   },
   // canonical はページごとに設定する（全ページ固定にするとサブページが
   // 重複扱いでインデックス除外されるため、各 page.tsx の alternates で指定）

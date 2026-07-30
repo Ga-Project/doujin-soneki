@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<style>
+  /* 製品のデザインシステム「朱墨の帳場」から直接引いたトークン（choba.css と同値）。
+     テンプレ流用ではなく製品固有の意匠で OGP を組む。 */
+  :root{
+    --kami: hsl(42 45% 96%);
+    --kami-3: hsl(42 28% 90%);
+    --sumi: hsl(220 20% 15%);
+    --sumi-2: hsl(220 10% 34%);
+    --shu: hsl(8 70% 40%);
+    --shu-hade: hsl(8 78% 50%);
+    --keisen-waku: hsl(220 12% 46%);
+    --keisen-ito: hsl(40 14% 76%);
+    --mincho: "Hiragino Mincho ProN","Yu Mincho","BIZ UDMincho",serif;
+    --kaku: "Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic","BIZ UDGothic",Meiryo,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1200px;height:630px}
+  body{
+    background:var(--kami);
+    /* 帳面の糸罫（横罫）— 台帳の地。装飾。 */
+    background-image:repeating-linear-gradient(hsl(40 14% 76% / 0) 0 47px, hsl(40 14% 76% / .5) 47px 48px);
+    font-family:var(--kaku);
+    color:var(--sumi);
+    position:relative;
+    overflow:hidden;
+  }
+  /* 太罫の外枠（表紙帯の枠） */
+  .waku{position:absolute;inset:34px;border:3px solid var(--sumi);}
+  .waku::before{content:"";position:absolute;inset:9px;border:1px solid var(--keisen-waku);}
+  .stage{position:absolute;inset:34px;display:flex;align-items:stretch;}
+  /* 左：縦書き表題（強い縦のアンカー・一列で通す） */
+  .tate{
+    writing-mode:vertical-rl;
+    font-family:var(--mincho);
+    font-weight:700;
+    font-size:74px;
+    letter-spacing:.05em;
+    color:var(--sumi);
+    padding:24px 30px 24px 0;
+    margin-left:44px;
+    line-height:1;
+    white-space:nowrap;
+  }
+  /* 朱の角印（表紙の判）— 表題の右の余白に捺した体裁。テキストに被せない。 */
+  .han{
+    position:absolute;right:66px;top:58px;
+    width:96px;height:96px;border-radius:8px;
+    background:var(--shu-hade);
+    display:flex;align-items:center;justify-content:center;
+    transform:rotate(-5deg);
+    box-shadow:0 2px 0 hsl(8 70% 30% / .35);
+  }
+  .han span{
+    font-family:var(--mincho);font-weight:700;color:var(--kami);
+    font-size:32px;line-height:1.05;text-align:center;letter-spacing:.02em;
+  }
+  /* 右：横書きコピー */
+  .yoko{flex:1;display:flex;flex-direction:column;justify-content:center;padding:60px 70px 60px 40px;}
+  .lead{
+    font-family:var(--mincho);font-weight:700;color:var(--sumi);
+    font-size:76px;line-height:1.22;letter-spacing:.01em;
+  }
+  .lead .aka{color:var(--shu);}
+  .sub{
+    margin-top:30px;font-size:31px;line-height:1.6;color:var(--sumi-2);font-weight:600;
+    border-top:3px solid var(--sumi);padding-top:26px;max-width:560px;
+  }
+  .tag{margin-top:26px;display:flex;gap:14px;}
+  .tag b{
+    font-size:23px;font-weight:700;color:var(--sumi);
+    background:var(--kami-3);border:1px solid var(--keisen-waku);
+    border-radius:4px;padding:8px 16px;
+  }
+  .oku{position:absolute;right:60px;bottom:46px;font-size:22px;color:var(--sumi-2);font-weight:600;letter-spacing:.04em;}
+</style>
+</head>
+<body>
+  <div class="waku"></div>
+  <div class="stage">
+    <div class="tate">同人ソンエキ</div>
+    <div class="han"><span>頒<br>布</span></div>
+    <div class="yoko">
+      <div class="lead">刷る前に、<span class="aka">そろばん。</span></div>
+      <div class="sub">同人誌の損益分岐部数と手取りを、印刷費と委託手数料から一枚の帳面で。</div>
+      <div class="tag"><b>損益分岐シミュレータ</b><b>頒布カウンター</b></div>
+    </div>
+  </div>
+  <div class="oku">登録不要・無料　ga-project.github.io/doujin-soneki</div>
+</body>
+</html>
