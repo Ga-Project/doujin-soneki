@@ -15,8 +15,11 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
+      // 同一オリジンには別の公開物も載るため、消すのは自分の世代だけに絞る。
       const names = await caches.keys();
-      await Promise.all(names.map((n) => caches.delete(n)));
+      await Promise.all(
+        names.filter((n) => n.startsWith("soneki-")).map((n) => caches.delete(n)),
+      );
       await self.registration.unregister();
       // 制御下のページを、Service Worker の居ない状態で開き直させる
       const clients = await self.clients.matchAll({ type: "window" });

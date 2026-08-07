@@ -63,9 +63,10 @@ env 未設定のままルート基準で動く。カスタムドメイン等で�
 
 GitHub Pages は取り消しの効かない配信面で、回復手段は「新しい `sw.js` を配る」だけ。
 
-1. 利用者にすぐ回避してもらうなら、URL に `?nosw` を付けてもらう
-   （例 `https://ga-project.github.io/doujin-soneki/tally/?nosw`）。この要求には
-   Service Worker が一切介入しないので、素の網に必ず到達できる。
+1. 利用者にすぐ回避してもらうなら、URL に `?nosw` を付けて開いてもらう
+   （例 `https://ga-project.github.io/doujin-soneki/tally/?nosw`）。**この登録自体を
+   解除する**ので、次の読み込みからは Service Worker の居ない素のサイトに戻る。
+   （介入を止めるだけでは、そのページが読む JS/CSS は結局 Service Worker を通る。）
 2. 全端末から取り消すなら、`scripts/sw-kill.js` の中身で `public/sw.js` を上書きして push する。
    各端末は次にサイトを開いた時点で、登録の解除と控えの全削除を行い、素のサイトへ戻る。
    （登録時に `updateViaCache: "none"` を指定しているので、この差し替えは HTTP キャッシュに
@@ -78,6 +79,9 @@ GitHub Pages は取り消しの効かない配信面で、回復手段は「新�
 地紙（`--kami`）に追従させている。一方 manifest の `background_color`（起動スプラッシュ）は
 静的な1色しか持てないため、**帳面の地＝生成り** を選んで固定している。夜帳の端末では
 起動の一瞬だけ生成りが出るが、これは仕様上の限界を承知のうえでの選択。
+なお `app/choba.css` には `[data-theme]` の手動上書きが用意されている。将来テーマの
+切替 UI を足すときは、`<meta name="theme-color">` を JS で書き換える処理も要る
+（`viewport.themeColor` は OS 設定にしか追従しない）。
 
 ### アイコンを作り直す
 

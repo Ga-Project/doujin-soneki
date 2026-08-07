@@ -43,6 +43,8 @@ export function markObiSeen(): void {
 
 /** Service Worker を登録する（冪等）。全ページから呼ばれる。 */
 export function registerSonae(): Promise<boolean> {
+  // 開発時は登録しない。控えが効くと編集が画面に反映されなくなる。
+  if (process.env.NODE_ENV !== "production") return Promise.resolve(false);
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
     return Promise.resolve(false);
   }

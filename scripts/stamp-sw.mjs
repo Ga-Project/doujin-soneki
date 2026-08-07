@@ -13,6 +13,11 @@ import { readFile, readdir, writeFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SHELL_PATHS } from "../lib/offline.ts";
+import {
+  referencedStatic,
+  selectPrecache,
+  splitPrecache,
+} from "./stamp-sw-select.mjs";
 
 const OUT = fileURLToPath(new URL("../out/", import.meta.url));
 
@@ -27,29 +32,6 @@ async function walk(dir) {
   return found;
 }
 
-/**
- * 控える対象を選ぶ。
- *   - 各ルートの index.html（＝ページそのもの）と、その RSC ペイロード index.txt
- *     （クライアント遷移はこちらを読むため、無いと遷移だけ圏外で失敗する）
- *   - _next/static 配下すべて（ハッシュ付きで内容不変。HTML が参照する実体）
- *   - manifest とアイコン（ホーム画面から起動したときに要る）
- * sw.js 自身と sitemap は控えない（前者は自分、後者は当日不要）。
- */
-function selectPrecache(files) {
-  return files
-    .filter(
-      (f) =>
-        f.endsWith("/index.html") ||
-        f === "index.html" ||
-        f.endsWith("/index.txt") ||
-        f === "index.txt" ||
-        f.startsWith("_next/static/") ||
-        f === "manifest.webmanifest" ||
-        (f.endsWith(".png") && !f.includes("/")),
-    )
-    .map((f) => (f === "index.html" ? "" : f.replace(/index\.html$/, "")))
-    .sort();
-}
 
 const files = await walk(OUT);
 const precache = selectPrecache(files);
@@ -63,11 +45,35 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-// 世代名 = 控える全ファイルの内容ハッシュ。中身が1バイトでも変われば別世代になる。
+// 各ページの HTML を読み、**その HTML が実際に参照している実体**を控えられて
+// いるかを検査する。「_next/static を全部拾ったか」ではなく「参照を覆えたか」で
+// なければ、「画面は出るが操作が効かない」世代を緑のビルドで通してしまう。
+const requiredStatic = new Set();
+for (const page of ["", "tally/"]) {
+  const html = await readFile(join(OUT, `${page}index.html`), "utf8");
+  const refs = referencedStatic(html);
+  if (refs.length === 0) {
+    console.error(`[stamp-sw] /${page} が資産を1つも参照していません（解析失敗？）`);
+    process.exit(1);
+  }
+  for (const r of refs) requiredStatic.add(r);
+}
+const uncovered = [...requiredStatic].filter((r) => !precache.includes(r));
+if (uncovered.length > 0) {
+  console.error(`[stamp-sw] 参照されているのに控えない資産: ${uncovered.join(", ")}`);
+  process.exit(1);
+}
+
+// 必須（当日の主戦場）と任意（周辺ページ）に分ける。
+const { required, optional } = splitPrecache(precache, [...requiredStatic]);
+
+// 世代名 = 控えるものの内容ハッシュ。中身が1バイトでも変われば別世代になる。
+// 控えないファイル（og.png・sitemap 等）は含めない — 差し替えただけで
+// 全端末が世代ごと取り直すのは無駄なので。
 const digest = createHash("sha256");
-for (const f of files.filter((f) => f !== "sw.js").sort()) {
-  digest.update(f);
-  digest.update(await readFile(join(OUT, f)));
+for (const p of precache) {
+  digest.update(p);
+  digest.update(await readFile(join(OUT, p === "" ? "index.html" : p.endsWith("/") ? `${p}index.html` : p)));
 }
 const build = digest.digest("hex").slice(0, 12);
 
@@ -75,23 +81,35 @@ const build = digest.digest("hex").slice(0, 12);
 // 先に現れる説明コメントの方が差し替わり、定数はプレースホルダのまま残る
 // ＝全ビルドが同じ世代名を共有して版ズレが復活する（実際に一度踏んだ）。
 const BUILD_DECL = 'const BUILD = "__BUILD__";';
-const PRECACHE_DECL = '["__PRECACHE__"]';
+const REQUIRED_DECL = '["__REQUIRED__"]';
+const OPTIONAL_DECL = '["__OPTIONAL__"]';
 
 const swPath = join(OUT, "sw.js");
 const src = await readFile(swPath, "utf8");
-if (!src.includes(BUILD_DECL) || !src.includes(PRECACHE_DECL)) {
+if (
+  !src.includes(BUILD_DECL) ||
+  !src.includes(REQUIRED_DECL) ||
+  !src.includes(OPTIONAL_DECL)
+) {
   console.error("[stamp-sw] out/sw.js に置換対象がありません（二重実行？）");
   process.exit(1);
 }
 const stamped = src
   .replace(BUILD_DECL, `const BUILD = "${build}";`)
-  .replace(PRECACHE_DECL, JSON.stringify(precache));
+  .replace(REQUIRED_DECL, JSON.stringify(required))
+  .replace(OPTIONAL_DECL, JSON.stringify(optional));
 
 // 焼き込み後にプレースホルダが残っていないことを確かめる（黙って素通りさせない）
-if (/const BUILD = "__BUILD__"/.test(stamped) || stamped.includes(PRECACHE_DECL)) {
+if (
+  /const BUILD = "__BUILD__"/.test(stamped) ||
+  stamped.includes(REQUIRED_DECL) ||
+  stamped.includes(OPTIONAL_DECL)
+) {
   console.error("[stamp-sw] 焼き込みに失敗しました（プレースホルダが残存）");
   process.exit(1);
 }
 await writeFile(swPath, stamped);
 
-console.log(`[stamp-sw] 世代 ${build} / 控える資産 ${precache.length} 件`);
+console.log(
+  `[stamp-sw] 世代 ${build} / 必須 ${required.length} 件・任意 ${optional.length} 件`,
+);

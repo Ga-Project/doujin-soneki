@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node --experimental-strip-types scripts/stamp-sw.mjs",
+    "build": "rm -rf out && next build && node --experimental-strip-types scripts/stamp-sw.mjs",
     "lint": "next lint --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test"

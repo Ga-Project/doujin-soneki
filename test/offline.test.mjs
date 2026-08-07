@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { selectPrecache } from "../scripts/stamp-sw-select.mjs";
 import {
   normalizeBasePath,
   swPath,
@@ -14,6 +15,7 @@ import {
 } from "../lib/offline.ts";
 
 const SW_SRC = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
+
 
 test("normalizeBasePath: ルート配信は空文字に畳む", () => {
   assert.equal(normalizeBasePath(""), "");
@@ -114,7 +116,8 @@ test("sw.js: 世代の焼き込み口（ビルド印・控える一覧）が残�
   // stamp-sw.mjs はこの2つを置換する。名前を変えると世代付けが黙って失われ、
   // 全ビルドが同じ控えを共有して版ズレを起こすので、置換対象を固定する。
   assert.ok(SW_SRC.includes("__BUILD__"), "ビルド印の置換対象が無い");
-  assert.ok(SW_SRC.includes('["__PRECACHE__"]'), "控える一覧の置換対象が無い");
+  assert.ok(SW_SRC.includes('["__REQUIRED__"]'), "必須一覧の置換対象が無い");
+  assert.ok(SW_SRC.includes('["__OPTIONAL__"]'), "任意一覧の置換対象が無い");
 });
 
 test("sw.js: 控える一覧を手で持たない（lib との二重定義を作らない）", () => {
@@ -156,4 +159,35 @@ test("sonaeFuda: 控えの側に「保存」の語を使わない（記帳デー
     const f = sonaeFuda(s);
     assert.ok(!`${f.text}${f.sr}`.includes("保存"), `${s} の文言に「保存」`);
   }
+});
+
+test("selectPrecache: ページ・RSC・資産・アプリのアイコンを拾う", () => {
+  const got = selectPrecache([
+    "index.html",
+    "index.txt",
+    "tally/index.html",
+    "tally/index.txt",
+    "_next/static/chunks/main-abc.js",
+    "_next/static/css/x.css",
+    "manifest.webmanifest",
+    "icon-192.png",
+  ]);
+  assert.ok(got.includes(""), "トップ");
+  assert.ok(got.includes("tally/"), "記帳画面");
+  assert.ok(got.includes("tally/index.txt"), "遷移用の RSC");
+  assert.ok(got.includes("_next/static/chunks/main-abc.js"), "JS 実体");
+  assert.ok(got.includes("manifest.webmanifest"));
+  assert.ok(got.includes("icon-192.png"));
+});
+
+test("selectPrecache: 当日使わないものは拾わない", () => {
+  const got = selectPrecache([
+    "sw.js",
+    "sitemap.xml",
+    "404.html",
+    "404/index.html",
+    "og.png",
+    "icon-small.png",
+  ]);
+  assert.deepEqual(got, [], `拾ってはいけないものを拾った: ${got.join(", ")}`);
 });

@@ -1767,10 +1767,9 @@ details.tatami > .tatami-body {
   justify-content: center;
   flex-wrap: wrap;
   gap: var(--ma-1);
-  padding-block: var(--ma-05);
+  padding-block: var(--ma-05) calc(var(--ma-05) + env(safe-area-inset-bottom));
   font-size: var(--ji-sai);
   color: var(--sumi-2);
-  padding-bottom: env(safe-area-inset-bottom);
 }
 .tally-jotai::before {
   content: "";

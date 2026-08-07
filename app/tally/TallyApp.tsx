@@ -112,10 +112,15 @@ export function TallyApp() {
     dismissObi: dismissSonaeObi,
   } = useSonae();
   const fuda = sonaeFuda(sonae);
-  // 1画面に知らせは1本。復元バー・保存不可の付箋が出た回は、控えの知らせを
-  // 「次の来訪へ繰り越す」。restoreDismissed を見ないのは、復元バーの × を押した
-  // 瞬間に同じ位置へ別の知らせが生えるのを避けるため（消したら次が出る、をしない）。
-  const sonaeObiVisible = showSonaeObi && !restored && !(loaded && !storageOk);
+  // 1画面に知らせは1本。ただし譲る条件は「この訪問で復元バーを実際に出したか」で、
+  // 「保存データを持っているか」ではない。後者にすると、記帳が残っている常連＝
+  // まさに当日 会場へ行く人が、以後どの訪問でも知らせを受け取れなくなる。
+  const restoreBarShownThisVisit = useRef(false);
+  if (restored && !restoreDismissed) restoreBarShownThisVisit.current = true;
+  const sonaeObiVisible =
+    showSonaeObi &&
+    !restoreBarShownThisVisit.current &&
+    !(loaded && !storageOk);
   // 「見せた」印は描画された回にだけ付ける。譲った回で焼き切ると、
   // 記帳が残っている常連（＝毎回復元バーが出る）が一度も読めなくなる。
   useEffect(() => {
@@ -443,7 +448,7 @@ export function TallyApp() {
         {/* 控えが揃った1回だけ知らせる。1画面に知らせは1本なので、復元バーと
             朱の付箋のどちらかが出ている間は譲る（次の来訪で出る）。
             「見せた」印は実際に描画した時だけ付ける（下の effect）。 */}
-        <div role="status" aria-live="polite">
+        <div role="status">
         {sonaeObiVisible && (
             <div className="fukugen fukugen-sonae">
               <span>この端末に控えを取りました — 会場で電波がなくても開けます</span>
@@ -1030,8 +1035,7 @@ export function TallyApp() {
           </div>
         )}
 
-        {/* 状態行。記帳（localStorage）の状態を文で、当日そなえ（アプリ本体の控え）を札で。
-            保存できない環境では朱の付箋が出ており、そちらが桁違いに重いので札は添えない。 */}
+        {/* 状態行。記帳（localStorage）の状態を文で、当日そなえ（アプリ本体の控え）を札で。 */}
         <p className={`tally-jotai${online ? "" : " is-offline"}`}>
           <span>
             {!storageOk
