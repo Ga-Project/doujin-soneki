@@ -9,7 +9,7 @@
          ＝一族であって複製ではない。48px でも残るのは朱の角印だけなので、判を主役に据える。
          朱をここで使うのは「印判」＝朱の予算制で許可された用途。
 
-         生成: scripts/make-icons.mjs（?maskable=1 で maskable 版に切り替わる） */
+         生成: `node scripts/make-icons.mjs`（?maskable=1 で maskable 版に切り替わる） */
       :root {
         --kami: hsl(42 45% 96%);
         --sumi: hsl(220 20% 15%);
@@ -87,14 +87,38 @@
       body.maskable .han span {
         font-size: 96px;
       }
+      /* small: タブの favicon（16〜32px）用。この寸法では枠は情報を持たず、
+         二字は潰れて読めない。枠を落とし、判を「損」一字に絞って面積を稼ぐ。 */
+      body.small .waku {
+        display: none;
+      }
+      body.small .han {
+        width: 400px;
+        height: 400px;
+        border-radius: 40px;
+      }
+      body.small .han span {
+        font-size: 300px;
+      }
+      /* 既定は二字、small のときだけ一字に差し替える */
+      .hitoji {
+        display: none;
+      }
+      body.small .futaji {
+        display: none;
+      }
+      body.small .hitoji {
+        display: block;
+      }
     </style>
   </head>
   <body>
     <div class="waku"></div>
-    <div class="han"><span>損<br />益</span></div>
+    <div class="han"><span class="futaji">損<br />益</span><span class="hitoji">損</span></div>
     <script>
-      if (new URLSearchParams(location.search).has("maskable")) {
-        document.body.classList.add("maskable");
+      const q = new URLSearchParams(location.search);
+      for (const v of ["maskable", "small"]) {
+        if (q.has(v)) document.body.classList.add(v);
       }
     </script>
   </body>

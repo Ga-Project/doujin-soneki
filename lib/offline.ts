@@ -3,7 +3,7 @@
 // 会場（即売会）は通信が混むため、当日タリーを「開けない」事故が起こりうる。
 // Service Worker でアプリシェルの控えを端末に持たせ、一度ひらいた端末なら
 // 接続が無くても開けるようにする。ここには「どこに登録するか」と「いまどの状態か」
-// の判定だけを置き、副作用は呼び出し側（app/tally/Sonae.tsx）が持つ。
+// の判定だけを置き、副作用は呼び出し側（app/sonae.tsx・app/tally/useSonae.ts）が持つ。
 //
 // 語彙の規約（混線を防ぐため厳守）:
 //   記帳データ（localStorage）… 「保存」と呼ぶ
@@ -62,19 +62,33 @@ export const SHELL_PATHS: readonly string[] = [
 ];
 
 /**
+ * 控えの実在を確かめる URL。当日ひらくのはこの1枚で、これが控えに無ければ
+ * 「電波がなくても開ける」とは言えない。sw の precache は世代ごとに
+ * all-or-nothing なので、この1枚の実在が世代一式の実在を意味する。
+ */
+export function tallyShellUrl(
+  basePath: string | undefined | null,
+  origin: string,
+): string {
+  return new URL(`${swScope(basePath)}tally/`, origin).toString();
+}
+
+/**
  * 登録の結果から状態を決める。
  *
- * 「ari＝接続が無くても開ける」と言い切れるのは、sw がこのページを実際に
- * 制御している時だけ。登録しただけの段階を ari と呼ばない（まだ控えの無い
- * 端末に「電波が無くても開けます」と表示して当日に裏切らないため）。
+ * 「ari＝接続が無くても開ける」と言い切れるのは、sw がこのページを制御していて
+ * **かつ控えが実在する**時だけ。登録できただけ・制御が付いただけでは ari と
+ * 呼ばない（まだ控えの無い端末に「電波が無くても開けます」と表示すると、
+ * 当日その場で裏切ることになるため）。
  */
 export function resolveSonaeState(input: {
   supported: boolean;
   failed: boolean;
   controlled: boolean;
+  cached: boolean;
 }): SonaeState {
   if (!input.supported || input.failed) return "fuka";
-  return input.controlled ? "ari" : "junbi";
+  return input.controlled && input.cached ? "ari" : "junbi";
 }
 
 /**
@@ -103,10 +117,13 @@ export function sonaeFuda(state: SonaeState): {
         className: "fuda fuda-junbi",
       };
     case "fuka":
+      // 「中」と同じ見た目にしない。junbi は待てば解消する途中、fuka は
+      // これ以上変わらない終端で、利用者の当日の段取りが変わる（電波が要る）。
+      // 破線＝進行中／実線＝確定、の対で墨のまま階層をつける。
       return {
-        text: "そなえ不可",
+        text: "そなえ不可（当日は電波が要ります）",
         sr: "（この環境では控えを取れません。会場では電波が必要です）",
-        className: "fuda fuda-junbi",
+        className: "fuda fuda-fuka",
       };
   }
 }

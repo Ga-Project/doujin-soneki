@@ -26,7 +26,7 @@ import {
   storageAvailable,
   type SimMoneyResult,
 } from "../storage";
-import { useSonae } from "./useSonae";
+import { markObiSeen, useSonae } from "./useSonae";
 
 const HISTORY_LIMIT = 300;
 
@@ -111,6 +111,16 @@ export function TallyApp() {
     showObi: showSonaeObi,
     dismissObi: dismissSonaeObi,
   } = useSonae();
+  const fuda = sonaeFuda(sonae);
+  // 1画面に知らせは1本。復元バー・保存不可の付箋が出た回は、控えの知らせを
+  // 「次の来訪へ繰り越す」。restoreDismissed を見ないのは、復元バーの × を押した
+  // 瞬間に同じ位置へ別の知らせが生えるのを避けるため（消したら次が出る、をしない）。
+  const sonaeObiVisible = showSonaeObi && !restored && !(loaded && !storageOk);
+  // 「見せた」印は描画された回にだけ付ける。譲った回で焼き切ると、
+  // 記帳が残っている常連（＝毎回復元バーが出る）が一度も読めなくなる。
+  useEffect(() => {
+    if (sonaeObiVisible) markObiSeen();
+  }, [sonaeObiVisible]);
   const [seiriOpen, setSeiriOpen] = useState(false);
   const [suteppaOpen, setSuteppaOpen] = useState(false);
   const [tsuikaOpen, setTsuikaOpen] = useState(false);
@@ -431,17 +441,12 @@ export function TallyApp() {
         )}
 
         {/* 控えが揃った1回だけ知らせる。1画面に知らせは1本なので、復元バーと
-            朱の付箋のどちらかが出ている間は譲る（次の来訪で出る）。 */}
-        {showSonaeObi &&
-          !(restored && !restoreDismissed) &&
-          !(loaded && !storageOk) && (
-            <div className="fukugen fukugen-sonae" role="status">
-              <span>
-                この端末に控えを取りました — 会場で電波がなくても開けます
-                <span className="sai sonae-hosoku">
-                  ブラウザの共有・メニューから［ホーム画面に追加］しておくと、当日は一突きで開けます（任意）
-                </span>
-              </span>
+            朱の付箋のどちらかが出ている間は譲る（次の来訪で出る）。
+            「見せた」印は実際に描画した時だけ付ける（下の effect）。 */}
+        <div role="status" aria-live="polite">
+        {sonaeObiVisible && (
+            <div className="fukugen fukugen-sonae">
+              <span>この端末に控えを取りました — 会場で電波がなくても開けます</span>
               <span className="migiyose">
                 <button
                   type="button"
@@ -454,6 +459,7 @@ export function TallyApp() {
               </span>
             </div>
           )}
+        </div>
 
         {/* ツメ帯（頒布物切替・＋追加のインライン展開） */}
         {items.length > 0 && (
@@ -779,6 +785,11 @@ export function TallyApp() {
                   gap: "var(--ma-05)",
                 }}
               >
+                <p className="sai">
+                  当日そなえ: ブラウザの共有・メニューから［ホーム画面に追加］を
+                  しておくと、一突きで開けるうえに控えが長持ちします。ブラウザの
+                  データを消すと控えも消えるので、前日にもう一度ひらくと確実です。
+                </p>
                 {wakeSupported && (
                   <label className="sumi-check">
                     <input
@@ -1022,19 +1033,19 @@ export function TallyApp() {
         {/* 状態行。記帳（localStorage）の状態を文で、当日そなえ（アプリ本体の控え）を札で。
             保存できない環境では朱の付箋が出ており、そちらが桁違いに重いので札は添えない。 */}
         <p className={`tally-jotai${online ? "" : " is-offline"}`}>
-          {!storageOk ? (
-            "この環境では保存されません — 記帳はページを閉じるまで有効"
-          ) : (
-            <>
-              <span>
-                {online ? "記帳中・端末に保存済み" : "オフライン記帳中・端末に保存済み"}
-              </span>
-              <span className={sonaeFuda(sonae).className}>
-                {sonaeFuda(sonae).text}
-                <span className="sr-only">{sonaeFuda(sonae).sr}</span>
-              </span>
-            </>
-          )}
+          <span>
+            {!storageOk
+              ? "この環境では保存されません — 記帳はページを閉じるまで有効"
+              : online
+                ? "記帳中・端末に保存済み"
+                : "オフライン記帳中・端末に保存済み"}
+          </span>
+          {/* 「保存できるか」と「控えがあるか」は別のこと。保存不可の端末でも
+              当日その場で開けるかは知りたい情報なので、札は消さない。 */}
+          <span className={fuda.className}>
+            {fuda.text}
+            <span className="sr-only">{fuda.sr}</span>
+          </span>
         </p>
       </main>
     </div>

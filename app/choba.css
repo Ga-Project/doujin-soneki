@@ -694,6 +694,12 @@ input.kinyu-input[aria-invalid="true"] {
   border-color: var(--keisen-waku);
   color: var(--sumi-2);
 }
+/* 控えを取れない環境（終端）。破線＝進行中と区別するため実線に戻す。 */
+.fuda-fuka {
+  border-style: solid;
+  border-color: var(--sumi-2);
+  color: var(--sumi-2);
+}
 
 /* 付箋（アラート）。左辺3px縦罫・角丸なし */
 .fusen {
@@ -1430,13 +1436,17 @@ details.tatami > .tatami-body {
   gap: var(--ma-1);
   align-items: center;
 }
-/* そなえの知らせ（.fukugen の派生）。補足の細字を2行目に全幅で落とす。 */
+/* そなえの知らせ（.fukugen の派生）。主文1行だけを載せる。
+   ［ホーム画面に追加］の案内は消える帯ではなく「帳面の整理」に常設する。
+   狭い端末で × が次行へ落ちると帯が 44px 分伸びて角印を押し下げるため、
+   本文側を縮ませて（flex:1 + min-width:0）1行に収める。 */
 .fukugen-sonae {
-  align-items: flex-start;
+  align-items: center;
+  flex-wrap: nowrap;
 }
-.fukugen-sonae .sonae-hosoku {
-  display: block;
-  margin-top: 2px;
+.fukugen-sonae > :first-child {
+  flex: 1;
+  min-width: 0;
 }
 
 /* 空の帳票（第二丁 空状態） */
@@ -1757,7 +1767,7 @@ details.tatami > .tatami-body {
   justify-content: center;
   flex-wrap: wrap;
   gap: var(--ma-1);
-  padding-top: 4px;
+  padding-block: var(--ma-05);
   font-size: var(--ji-sai);
   color: var(--sumi-2);
   padding-bottom: env(safe-area-inset-bottom);

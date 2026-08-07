@@ -2,14 +2,18 @@
 // 実行: pnpm test（Node が .ts を型ストリップして読み込む）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   normalizeBasePath,
   swPath,
   swScope,
   resolveSonaeState,
   sonaeFuda,
+  tallyShellUrl,
   SHELL_PATHS,
 } from "../lib/offline.ts";
+
+const SW_SRC = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
 
 test("normalizeBasePath: ルート配信は空文字に畳む", () => {
   assert.equal(normalizeBasePath(""), "");
@@ -52,31 +56,81 @@ test("SHELL_PATHS: 当日ひらく2画面（トップ・タリー）を必ず含
 
 test("resolveSonaeState: 非対応・登録失敗はどちらも fuka", () => {
   assert.equal(
-    resolveSonaeState({ supported: false, failed: false, controlled: false }),
-    "fuka",
-  );
-  // 非対応なら controlled の値によらず fuka
-  assert.equal(
-    resolveSonaeState({ supported: false, failed: false, controlled: true }),
+    resolveSonaeState({
+      supported: false,
+      failed: false,
+      controlled: true,
+      cached: true,
+    }),
     "fuka",
   );
   // 対応環境でも登録に失敗したら控えは無い
   assert.equal(
-    resolveSonaeState({ supported: true, failed: true, controlled: false }),
+    resolveSonaeState({
+      supported: true,
+      failed: true,
+      controlled: true,
+      cached: true,
+    }),
     "fuka",
   );
 });
 
-test("resolveSonaeState: sw が制御していて初めて ari と言い切る", () => {
+test("resolveSonaeState: 制御＋控えの実在が揃って初めて ari と言い切る", () => {
+  const base = { supported: true, failed: false };
   // 登録しただけ＝まだ控えが無い端末。「電波が無くても開けます」と表示しない
   assert.equal(
-    resolveSonaeState({ supported: true, failed: false, controlled: false }),
+    resolveSonaeState({ ...base, controlled: false, cached: false }),
+    "junbi",
+  );
+  // 制御は付いたが控えが無い（precache が丸ごと失敗した端末）＝まだ ari ではない
+  assert.equal(
+    resolveSonaeState({ ...base, controlled: true, cached: false }),
+    "junbi",
+  );
+  // 控えはあるが制御が付いていない（初回訪問の途中）＝まだ ari ではない
+  assert.equal(
+    resolveSonaeState({ ...base, controlled: false, cached: true }),
     "junbi",
   );
   assert.equal(
-    resolveSonaeState({ supported: true, failed: false, controlled: true }),
+    resolveSonaeState({ ...base, controlled: true, cached: true }),
     "ari",
   );
+});
+
+test("tallyShellUrl: 控えの実在を確かめる先は当日ひらく /tally/", () => {
+  assert.equal(
+    tallyShellUrl("", "https://example.test"),
+    "https://example.test/tally/",
+  );
+  assert.equal(
+    tallyShellUrl("/doujin-soneki", "https://ga-project.github.io"),
+    "https://ga-project.github.io/doujin-soneki/tally/",
+  );
+});
+
+test("sw.js: 世代の焼き込み口（ビルド印・控える一覧）が残っている", () => {
+  // stamp-sw.mjs はこの2つを置換する。名前を変えると世代付けが黙って失われ、
+  // 全ビルドが同じ控えを共有して版ズレを起こすので、置換対象を固定する。
+  assert.ok(SW_SRC.includes("__BUILD__"), "ビルド印の置換対象が無い");
+  assert.ok(SW_SRC.includes('["__PRECACHE__"]'), "控える一覧の置換対象が無い");
+});
+
+test("sw.js: 控える一覧を手で持たない（lib との二重定義を作らない）", () => {
+  // 控える対象はビルド成果物から stamp-sw.mjs が生成する。sw.js 側に
+  // 手書きの一覧が復活すると、lib/offline.ts の SHELL_PATHS と静かに乖離する。
+  for (const p of SHELL_PATHS.filter((p) => p !== "")) {
+    assert.ok(
+      !SW_SRC.includes(`"${p}"`),
+      `sw.js に手書きの控え一覧（"${p}"）がある`,
+    );
+  }
+});
+
+test("sw.js: 逃げ道（?nosw）と別オリジン不介入を持っている", () => {
+  assert.ok(SW_SRC.includes('searchParams.has("nosw")'), "逃げ道が無い");
+  assert.ok(SW_SRC.includes("url.origin !== scope.origin"), "別オリジンに介入する");
 });
 
 test("sonaeFuda: どの状態でも札を消さない（控えが無いことを黙らない）", () => {

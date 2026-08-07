@@ -5,6 +5,7 @@ import Script from "next/script";
 import "./choba.css";
 import { SITE_URL, GOATCOUNTER_CODE, GOATCOUNTER_CONFIGURED } from "./config";
 import { normalizeBasePath } from "../lib/offline";
+import { SonaeRegister } from "./sonae";
 
 // Pages のサブパス配信（/doujin-soneki/）でも manifest・アイコンを取り違えないよう、
 // ビルド時 basePath を前置した絶対パスで出す。
@@ -63,6 +64,9 @@ export const metadata: Metadata = {
   manifest: `${BASE}/manifest.webmanifest`,
   icons: {
     icon: [
+      // タブの favicon は 16〜32px まで縮む。枠と二字は潰れるので、
+      // 枠を外して判を一字にした別意匠を小サイズ用に用意している。
+      { url: `${BASE}/icon-32.png`, sizes: "32x32", type: "image/png" },
       { url: `${BASE}/icon-192.png`, sizes: "192x192", type: "image/png" },
       { url: `${BASE}/icon-512.png`, sizes: "512x512", type: "image/png" },
     ],
@@ -90,6 +94,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="ja">
       <body>
         {children}
+        {/* 当日そなえ: 全ページで控えを取る（トップだけ見た端末にも要る） */}
+        <SonaeRegister />
         {/* アクセス解析（cookieless・秘密キー不要）。config.ts の GOATCOUNTER_CODE に
             実コードを設定したときだけタグを出力する（プレースホルダのままなら出さない） */}
         {GOATCOUNTER_CONFIGURED && (

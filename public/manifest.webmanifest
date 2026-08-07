@@ -4,7 +4,6 @@
   "description": "同人誌の印刷費と委託手数料から損益分岐部数と手取りを計算し、即売会当日の頒布をかぞえる帳面。",
   "lang": "ja",
   "dir": "ltr",
-  "id": "./",
   "scope": "./",
   "start_url": "./tally/",
   "display": "standalone",

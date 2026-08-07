@@ -43,6 +43,48 @@ GitHub Pages（GitHub Actions で自動デプロイ）。同梱の `.github/work
 env 未設定のままルート基準で動く。カスタムドメイン等でルート配信する場合は
 `pages.yml` の該当 env を外す。
 
+## 当日そなえ（オフライン対応）
+
+即売会の会場は通信が混み、当日に頒布カウンターを開けないことがある。Service Worker
+（`public/sw.js`）でアプリ一式の控えを端末に持たせ、**一度ひらいた端末なら接続が無くても
+開ける**ようにしている。記帳データは従来どおり `localStorage`（Service Worker とは無関係）。
+
+### 世代（generation）方式
+
+控えは「ビルド1回＝1世代」で持つ。`pnpm build` は `next build` のあと
+`scripts/stamp-sw.mjs` を走らせ、`out/sw.js` に **ビルド印** と **その世代で控える資産の一覧**
+を焼き込む。install はその一覧を **all-or-nothing** で取り込み、1つでも欠けたら世代を作らない。
+
+こうする理由は、HTML と、その HTML が読み込む JS の世代がズレると
+「画面は出るのに操作が効かない」という無音の故障になるため。世代ごとに自己完結させれば、
+控えから開いた画面は必ず整合する。旧世代は `activate`（全タブが閉じたあと）で削除される。
+
+### 控えが壊れたときの止め方（kill switch）
+
+GitHub Pages は取り消しの効かない配信面で、回復手段は「新しい `sw.js` を配る」だけ。
+
+1. 利用者にすぐ回避してもらうなら、URL に `?nosw` を付けてもらう
+   （例 `https://ga-project.github.io/doujin-soneki/tally/?nosw`）。この要求には
+   Service Worker が一切介入しないので、素の網に必ず到達できる。
+2. 全端末から取り消すなら、`scripts/sw-kill.js` の中身で `public/sw.js` を上書きして push する。
+   各端末は次にサイトを開いた時点で、登録の解除と控えの全削除を行い、素のサイトへ戻る。
+   （登録時に `updateViaCache: "none"` を指定しているので、この差し替えは HTTP キャッシュに
+   邪魔されず届く。）
+3. 直したら `public/sw.js` を元に戻して push する。
+
+### 色の扱い（manifest に書けないこと）
+
+ステータスバーの地色は `app/layout.tsx` の `viewport.themeColor` で昼帳・夜帳それぞれの
+地紙（`--kami`）に追従させている。一方 manifest の `background_color`（起動スプラッシュ）は
+静的な1色しか持てないため、**帳面の地＝生成り** を選んで固定している。夜帳の端末では
+起動の一瞬だけ生成りが出るが、これは仕様上の限界を承知のうえでの選択。
+
+### アイコンを作り直す
+
+意匠の正は `scripts/icon.html`。直したら `node scripts/make-icons.mjs` を流して
+`public/icon-*.png` と `apple-touch-icon.png` を作り直す（macOS の Chrome と sips を使う）。
+
+
 ## 構成
 
 ```
@@ -52,8 +94,10 @@ doujin-soneki/
 │  ├─ Simulator.tsx         # 損益分岐シミュレータ（クライアント・localStorage 自動保存）
 │  ├─ ProfitChart.tsx       # SVG 損益グラフ（黒字/赤字ゾーン・分岐マーカー・スナップ読み取り）
 │  ├─ tally/                # 頒布タリー（+1 / Undo / 搬入数 / オフライン動作）
+│  │  └─ useSonae.ts        # 当日そなえ（SW の登録と状態観測）
 │  ├─ terms/ ・ privacy/    # 利用規約・プライバシーポリシー
 │  ├─ chrome.tsx            # 共通ヘッダー/フッター/ブランドマーク
+│  ├─ sonae.tsx             # 当日そなえの登録だけを行う（全ページ・描画なし）
 │  ├─ storage.ts            # localStorage スキーマ（バージョン付き）と型安全ロード
 │  ├─ config.ts             # 公開値（サイトURL・解析コード・委託先プリセット）
 │  ├─ not-found.tsx         # 404 ページ（static export で out/404.html を生成）
@@ -61,10 +105,15 @@ doujin-soneki/
 │  ├─ product.css           # 製品固有レイアウト（製図台 2 カラム / thumb-zone タリー）
 │  └─ globals.css           # 共通デザイン基盤（CSS変数トークン+ベーススタイル・light/dark・a11y）
 ├─ lib/
-│  └─ soneki.ts             # 中核計算ロジック（純関数・損益/分岐/目盛/タリー）
+│  ├─ soneki.ts             # 中核計算ロジック（純関数・損益/分岐/目盛/タリー）
+│  └─ offline.ts            # 当日そなえの純ロジック（登録先の解決・状態判定）
 ├─ public/                  # 静的アセット置き場
+│  ├─ sw.js                 # Service Worker（当日そなえ・世代方式の控え）
+│  ├─ manifest.webmanifest  # ホーム画面に追加して単独起動するための宣言
+│  └─ icon-*.png ほか       # アプリアイコン（scripts/make-icons.mjs で生成）
 ├─ test/
-│  └─ soneki.test.mjs       # node:test の単体テスト（計算ロジック）
+│  ├─ soneki.test.mjs       # node:test の単体テスト（計算ロジック）
+│  └─ offline.test.mjs      # 同上（当日そなえ）
 ├─ next.config.mjs          # output: "export" + PAGES_BASE_PATH（static export 設定）
 ├─ tsconfig.json            # このリポジトリ単体で完結（extends なし・strict）
 ├─ scripts/public-gate.sh   # 公開前ゲート（CI と手元で共通に走る検査）

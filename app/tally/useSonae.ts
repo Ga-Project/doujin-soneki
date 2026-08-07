@@ -1,19 +1,29 @@
 "use client";
 
 // 当日そなえ — アプリ本体の控えを端末に取る（Service Worker の登録と状態観測）。
-// 会場は通信が混むため、一度ひらいた端末なら接続が無くても /tally を開けるようにする。
+// 会場は通信が混むため、一度ひらいた端末なら接続が無くても開けるようにする。
 // 判定そのものは lib/offline.ts（単体テストあり）に置き、ここは副作用だけを持つ。
+//
+// 登録は全ページで走らせる（app/sonae.tsx をレイアウトに置いている）。
+// トップだけ見て帰った人の端末にも控えが要るため。このフックは /tally で
+// 状態を読むために使い、登録は冪等なのでどちらから呼んでも同じ 1 つに収束する。
 //
 // 語彙: 記帳データ（localStorage）は「保存」、アプリ本体の控えは「そなえ／控え」。
 // 混ぜない（何が端末に残っているのか読み手が分からなくなるため）。
 
 import { useCallback, useEffect, useState } from "react";
-import { resolveSonaeState, swPath, swScope, type SonaeState } from "@/lib/offline";
+import {
+  resolveSonaeState,
+  swPath,
+  swScope,
+  tallyShellUrl,
+  type SonaeState,
+} from "@/lib/offline";
 import { SONAE_SEEN_NAME } from "../config";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH;
 
-/** 「控えを取りました」の帯を既に見せたか。localStorage が使えない環境では常に未読扱い。 */
+/** 「控えを取りました」の知らせを既に見せたか。読めない環境では未読扱いにする。 */
 function seenObi(): boolean {
   try {
     return window.localStorage.getItem(SONAE_SEEN_NAME) !== null;
@@ -22,7 +32,8 @@ function seenObi(): boolean {
   }
 }
 
-function markObiSeen(): void {
+/** 実際に画面へ出した時だけ呼ぶ（出していないのに既読にしない）。 */
+export function markObiSeen(): void {
   try {
     window.localStorage.setItem(SONAE_SEEN_NAME, "1");
   } catch {
@@ -30,9 +41,22 @@ function markObiSeen(): void {
   }
 }
 
+/** Service Worker を登録する（冪等）。全ページから呼ばれる。 */
+export function registerSonae(): Promise<boolean> {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+    return Promise.resolve(false);
+  }
+  return navigator.serviceWorker
+    // updateViaCache:"none" ＝ sw.js 自体を HTTP キャッシュ越しに読ませない。
+    // 控えが壊れたときの差し替え（README の止め方）が確実に届くようにする。
+    .register(swPath(BASE), { scope: swScope(BASE), updateViaCache: "none" })
+    .then(() => true)
+    .catch(() => false);
+}
+
 export function useSonae(): {
   state: SonaeState;
-  /** 「この端末に控えを取りました」の帯を出すか（初めて控えが揃った1回だけ） */
+  /** 「この端末に控えを取りました」の知らせを出してよいか（初めて控えが揃った1回だけ） */
   showObi: boolean;
   dismissObi: () => void;
 } {
@@ -44,33 +68,46 @@ export function useSonae(): {
     const supported =
       typeof navigator !== "undefined" && "serviceWorker" in navigator;
     if (!supported) {
-      setState(resolveSonaeState({ supported, failed: false, controlled: false }));
+      setState("fuka");
       return;
     }
 
     let alive = true;
-    const sync = (failed: boolean): void => {
-      if (!alive) return;
+    const sync = async (failed: boolean): Promise<void> => {
       const controlled = navigator.serviceWorker.controller !== null;
-      const next = resolveSonaeState({ supported: true, failed, controlled });
-      setState(next);
-      // 帯は「控えが揃った」瞬間に一度だけ。既読フラグはその場で立てて再訪で出さない。
-      if (next === "ari" && !seenObi()) {
-        markObiSeen();
-        setShowObi(true);
+      // 控えの実在を実測する。制御が付いただけで「開けます」と言わない。
+      let cached = false;
+      try {
+        cached =
+          (await caches.match(tallyShellUrl(BASE, location.origin))) !==
+          undefined;
+      } catch {
+        /* Cache Storage を読めない環境は控え無しとみなす */
       }
+      if (!alive) return;
+      const next = resolveSonaeState({
+        supported: true,
+        failed,
+        controlled,
+        cached,
+      });
+      setState(next);
+      // 知らせは控えが揃った時だけ。既読にするのは実際に描画した側の責務
+      // （復元バー等に譲って表示されなかった回で焼き切らないため）。
+      if (next === "ari" && !seenObi()) setShowObi(true);
     };
 
-    navigator.serviceWorker
-      .register(swPath(BASE), { scope: swScope(BASE) })
-      .then(() => sync(false))
-      .catch(() => sync(true));
+    registerSonae().then((ok) => {
+      void sync(!ok);
+    });
 
     // 初回訪問では登録直後にまだ controller が付いていない。制御が移った時点で
     // 「そなえ中 → そなえ済」へ繰り上げる（利用者を再読み込みまで待たせない）。
-    const onChange = (): void => sync(false);
+    const onChange = (): void => {
+      void sync(false);
+    };
     navigator.serviceWorker.addEventListener("controllerchange", onChange);
-    sync(false);
+    void sync(false);
 
     return () => {
       alive = false;
