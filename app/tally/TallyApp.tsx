@@ -16,6 +16,7 @@ import {
   type TallyEvent,
   type TallyItem,
 } from "@/lib/soneki";
+import { sonaeFuda } from "@/lib/offline";
 import {
   clearTally,
   deriveSimMoney,
@@ -25,6 +26,7 @@ import {
   storageAvailable,
   type SimMoneyResult,
 } from "../storage";
+import { useSonae } from "./useSonae";
 
 const HISTORY_LIMIT = 300;
 
@@ -103,6 +105,12 @@ export function TallyApp() {
   // 「白紙に戻す」のインライン確認（/ 側の復元バーと同一様式・window.confirm 不使用）
   const [confirmHakushi, setConfirmHakushi] = useState(false);
   const [online, setOnline] = useState(true);
+  // 当日そなえ（アプリ本体の控え）。記帳の保存とは別物なので語彙を混ぜない。
+  const {
+    state: sonae,
+    showObi: showSonaeObi,
+    dismissObi: dismissSonaeObi,
+  } = useSonae();
   const [seiriOpen, setSeiriOpen] = useState(false);
   const [suteppaOpen, setSuteppaOpen] = useState(false);
   const [tsuikaOpen, setTsuikaOpen] = useState(false);
@@ -421,6 +429,31 @@ export function TallyApp() {
             ※ この環境では保存できません。ページを閉じると記帳が消えます。
           </div>
         )}
+
+        {/* 控えが揃った1回だけ知らせる。1画面に知らせは1本なので、復元バーと
+            朱の付箋のどちらかが出ている間は譲る（次の来訪で出る）。 */}
+        {showSonaeObi &&
+          !(restored && !restoreDismissed) &&
+          !(loaded && !storageOk) && (
+            <div className="fukugen fukugen-sonae" role="status">
+              <span>
+                この端末に控えを取りました — 会場で電波がなくても開けます
+                <span className="sai sonae-hosoku">
+                  ブラウザの共有・メニューから［ホーム画面に追加］しておくと、当日は一突きで開けます（任意）
+                </span>
+              </span>
+              <span className="migiyose">
+                <button
+                  type="button"
+                  className="bt-kesu"
+                  aria-label="この知らせを閉じる"
+                  onClick={dismissSonaeObi}
+                >
+                  ×
+                </button>
+              </span>
+            </div>
+          )}
 
         {/* ツメ帯（頒布物切替・＋追加のインライン展開） */}
         {items.length > 0 && (
@@ -986,13 +1019,22 @@ export function TallyApp() {
           </div>
         )}
 
-        {/* 状態行 */}
+        {/* 状態行。記帳（localStorage）の状態を文で、当日そなえ（アプリ本体の控え）を札で。
+            保存できない環境では朱の付箋が出ており、そちらが桁違いに重いので札は添えない。 */}
         <p className={`tally-jotai${online ? "" : " is-offline"}`}>
-          {!storageOk
-            ? "この環境では保存されません — 記帳はページを閉じるまで有効"
-            : online
-              ? "記帳中・端末に保存済み"
-              : "オフライン記帳中・端末に保存済み"}
+          {!storageOk ? (
+            "この環境では保存されません — 記帳はページを閉じるまで有効"
+          ) : (
+            <>
+              <span>
+                {online ? "記帳中・端末に保存済み" : "オフライン記帳中・端末に保存済み"}
+              </span>
+              <span className={sonaeFuda(sonae).className}>
+                {sonaeFuda(sonae).text}
+                <span className="sr-only">{sonaeFuda(sonae).sr}</span>
+              </span>
+            </>
+          )}
         </p>
       </main>
     </div>

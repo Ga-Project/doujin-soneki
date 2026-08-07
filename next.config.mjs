@@ -14,6 +14,10 @@ const nextConfig = {
   // 各ルートを /path/index.html として出力し、サブディレクトリ配信で 404 を避ける。
   trailingSlash: true,
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
+  // Service Worker の登録先（basePath 直下の /sw.js）をクライアント側で組み立てるため、
+  // ビルド時の basePath を公開値として焼き込む。app router には basePath を実行時に
+  // 取り出す API が無く、ページ相対で解決すると /tally/sw.js を見に行って失敗する。
+  env: { NEXT_PUBLIC_BASE_PATH: basePath },
 };
 
 export default nextConfig;

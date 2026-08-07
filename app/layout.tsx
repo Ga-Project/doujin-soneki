@@ -1,9 +1,14 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import Script from "next/script";
 // デザインシステム「朱墨の帳場」— 本製品専用にゼロから構築したオリジナル体系。
 import "./choba.css";
 import { SITE_URL, GOATCOUNTER_CODE, GOATCOUNTER_CONFIGURED } from "./config";
+import { normalizeBasePath } from "../lib/offline";
+
+// Pages のサブパス配信（/doujin-soneki/）でも manifest・アイコンを取り違えないよう、
+// ビルド時 basePath を前置した絶対パスで出す。
+const BASE = normalizeBasePath(process.env.NEXT_PUBLIC_BASE_PATH);
 
 const title = "同人ソンエキ｜同人誌の損益分岐シミュレータ＆頒布カウンター";
 const description =
@@ -52,6 +57,32 @@ export const metadata: Metadata = {
   },
   // canonical はページごとに設定する（全ページ固定にするとサブページが
   // 重複扱いでインデックス除外されるため、各 page.tsx の alternates で指定）
+
+  // ホーム画面に追加して単独起動できるようにする（当日そなえ）。
+  // 独自のインストールバナーは出さず、ブラウザ自身のインストール UI に任せる。
+  manifest: `${BASE}/manifest.webmanifest`,
+  icons: {
+    icon: [
+      { url: `${BASE}/icon-192.png`, sizes: "192x192", type: "image/png" },
+      { url: `${BASE}/icon-512.png`, sizes: "512x512", type: "image/png" },
+    ],
+    // iOS は manifest のアイコンをホーム画面に使わない。これが無いと白紙になる。
+    apple: [
+      { url: `${BASE}/apple-touch-icon.png`, sizes: "180x180" },
+    ],
+  },
+};
+
+/**
+ * ステータスバーの地色。manifest の theme_color は静的なので、夜帳の端末では
+ * 「ステータスバーだけ生成り色」という継ぎ目が出る。昼帳・夜帳それぞれの
+ * 地紙（--kami）をそのまま流し込んで、帳面と地続きに見せる。
+ */
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "hsl(42 45% 96%)" },
+    { media: "(prefers-color-scheme: dark)", color: "hsl(220 16% 10%)" },
+  ],
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

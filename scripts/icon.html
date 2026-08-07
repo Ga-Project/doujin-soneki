@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>同人ソンエキ アイコン原版</title>
+    <style>
+      /* デザインシステム「朱墨の帳場」のトークンを直接引く（og.html と同じ流儀）。
+         OGP の判は「頒／布」、アイコンの判は「損／益」。同じ構文で別のことを言う
+         ＝一族であって複製ではない。48px でも残るのは朱の角印だけなので、判を主役に据える。
+         朱をここで使うのは「印判」＝朱の予算制で許可された用途。
+
+         生成: scripts/make-icons.mjs（?maskable=1 で maskable 版に切り替わる） */
+      :root {
+        --kami: hsl(42 45% 96%);
+        --sumi: hsl(220 20% 15%);
+        --keisen-waku: hsl(220 12% 46%);
+        --shu-hade: hsl(8 78% 50%);
+        --mincho: "Hiragino Mincho ProN", "Yu Mincho", "BIZ UDMincho", serif;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 512px;
+        height: 512px;
+      }
+      body {
+        background: var(--kami);
+        /* 帳面の糸罫（OGP と同じ地・512 に合わせて 40px ピッチ） */
+        background-image: repeating-linear-gradient(
+          hsl(40 14% 76% / 0) 0 39px,
+          hsl(40 14% 76% / 0.5) 39px 40px
+        );
+        position: relative;
+        overflow: hidden;
+      }
+      /* 表紙の太罫＋内側の細罫（OGP の .waku と同構造） */
+      .waku {
+        position: absolute;
+        inset: 28px;
+        border: 8px solid var(--sumi);
+      }
+      .waku::before {
+        content: "";
+        position: absolute;
+        inset: 10px;
+        border: 2px solid var(--keisen-waku);
+      }
+      /* 朱の角印。捺した体裁の静的回転 -5deg（OGP と同角）。
+         外接円 272×√2 ≒ 385px < 枠内の有効面 416px ＝ 枠に触れない。 */
+      .han {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 272px;
+        height: 272px;
+        border-radius: 24px;
+        background: var(--shu-hade);
+        transform: translate(-50%, -50%) rotate(-5deg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 6px 0 hsl(8 70% 30% / 0.35);
+      }
+      .han span {
+        font-family: var(--mincho);
+        font-weight: 700;
+        color: var(--kami);
+        font-size: 104px;
+        line-height: 1.06;
+        text-align: center;
+        letter-spacing: 0.02em;
+      }
+      /* maskable: 外枠を外し、判を安全域（中央80%＝直径409px）に収める。
+         外接円 248×√2 ≒ 351px < 409px。地紙と糸罫は残す（切り取られても破綻しない）。 */
+      body.maskable .waku {
+        display: none;
+      }
+      body.maskable .han {
+        width: 248px;
+        height: 248px;
+        border-radius: 20px;
+      }
+      body.maskable .han span {
+        font-size: 96px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="waku"></div>
+    <div class="han"><span>損<br />益</span></div>
+    <script>
+      if (new URLSearchParams(location.search).has("maskable")) {
+        document.body.classList.add("maskable");
+      }
+    </script>
+  </body>
+</html>

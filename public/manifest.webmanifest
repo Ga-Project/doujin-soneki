@@ -1,0 +1,33 @@
+{
+  "name": "同人ソンエキ｜損益分岐と頒布カウンター",
+  "short_name": "同人ソンエキ",
+  "description": "同人誌の印刷費と委託手数料から損益分岐部数と手取りを計算し、即売会当日の頒布をかぞえる帳面。",
+  "lang": "ja",
+  "dir": "ltr",
+  "id": "./",
+  "scope": "./",
+  "start_url": "./tally/",
+  "display": "standalone",
+  "background_color": "#f9f7f0",
+  "theme_color": "#f9f7f0",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

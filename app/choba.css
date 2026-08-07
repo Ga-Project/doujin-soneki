@@ -685,6 +685,15 @@ input.kinyu-input[aria-invalid="true"] {
   border-color: var(--shu);
   color: var(--shu);
 }
+/* 当日そなえ（アプリ本体の控え）が未完了・不可のときの札。
+   朱は使わない ——「赤字・警告・分岐・印判」の4用途外であり、
+   /tally の朱は角印・完売御礼印・赤字数値で既に飽和しているため。
+   墨のまま枠罫を破線にして「まだ実線になっていない」ことだけを示す。 */
+.fuda-junbi {
+  border-style: dashed;
+  border-color: var(--keisen-waku);
+  color: var(--sumi-2);
+}
 
 /* 付箋（アラート）。左辺3px縦罫・角丸なし */
 .fusen {
@@ -1421,6 +1430,14 @@ details.tatami > .tatami-body {
   gap: var(--ma-1);
   align-items: center;
 }
+/* そなえの知らせ（.fukugen の派生）。補足の細字を2行目に全幅で落とす。 */
+.fukugen-sonae {
+  align-items: flex-start;
+}
+.fukugen-sonae .sonae-hosoku {
+  display: block;
+  margin-top: 2px;
+}
 
 /* 空の帳票（第二丁 空状態） */
 .karacho {
@@ -1732,11 +1749,15 @@ details.tatami > .tatami-body {
 /* 状態行 */
 .tally-jotai {
   flex-shrink: 0;
-  height: 32px;
+  /* 当日そなえの札が同居するため高さは固定しない。狭い端末では折り返す
+     （増えた分は flex:1 の勘定面から取られ、角印の高さは減らない）。 */
+  min-height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
   gap: var(--ma-1);
+  padding-top: 4px;
   font-size: var(--ji-sai);
   color: var(--sumi-2);
   padding-bottom: env(safe-area-inset-bottom);
