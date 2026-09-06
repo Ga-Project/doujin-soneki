@@ -3,12 +3,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { selectPrecache } from "../scripts/stamp-sw-select.mjs";
+import {
+  selectPrecache,
+  splitPrecache,
+  referencedStatic,
+} from "../scripts/stamp-sw-select.mjs";
 import {
   normalizeBasePath,
   swPath,
   swScope,
   resolveSonaeState,
+  shouldRegisterSonae,
+  nextOptOut,
   sonaeFuda,
   tallyShellUrl,
   SHELL_PATHS,
@@ -190,4 +196,112 @@ test("selectPrecache: 当日使わないものは拾わない", () => {
     "icon-small.png",
   ]);
   assert.deepEqual(got, [], `拾ってはいけないものを拾った: ${got.join(", ")}`);
+});
+
+
+// --- 必須／任意の振り分け ------------------------------------------------
+// ここを誤ると「HTML だけ必須・チャンクは任意」という世代が成立し、
+// install は成功するのに圏外で操作が効かない（＝札は「そなえ済」のまま）。
+// この増分が最も恐れている故障が、緑のビルドで通ってしまう。
+
+test("splitPrecache: 当日の主戦場と、それが読む実体だけを必須にする", () => {
+  const precache = [
+    "",
+    "tally/",
+    "terms/",
+    "index.txt",
+    "tally/index.txt",
+    "_next/static/chunks/a.js",
+    "_next/static/chunks/b.js",
+    "manifest.webmanifest",
+    "icon-192.png",
+  ];
+  const { required, optional } = splitPrecache(precache, [
+    "_next/static/chunks/a.js",
+  ]);
+  for (const p of ["", "tally/", "index.txt", "tally/index.txt", "_next/static/chunks/a.js"]) {
+    assert.ok(required.includes(p), `必須に入るべき: ${p}`);
+  }
+  for (const p of ["terms/", "_next/static/chunks/b.js", "manifest.webmanifest", "icon-192.png"]) {
+    assert.ok(optional.includes(p), `任意に落ちるべき: ${p}`);
+  }
+  assert.equal(required.length + optional.length, precache.length);
+});
+
+test("splitPrecache: ページが参照する実体は必ず必須に入る（版ズレ不変条件）", () => {
+  const html = '<link href="/doujin-soneki/_next/static/css/x.css"><script src="/doujin-soneki/_next/static/chunks/y.js">';
+  const refs = referencedStatic(html);
+  assert.deepEqual(refs, [
+    "_next/static/chunks/y.js",
+    "_next/static/css/x.css",
+  ]);
+  const { required } = splitPrecache(["", "tally/", ...refs], refs);
+  for (const r of refs) assert.ok(required.includes(r), `参照実体が必須から漏れた: ${r}`);
+});
+
+test("referencedStatic: basePath 無しの配信でも scope 相対に揃う", () => {
+  assert.deepEqual(referencedStatic('<script src="/_next/static/chunks/z.js">'), [
+    "_next/static/chunks/z.js",
+  ]);
+});
+
+// --- 逃げ道（?nosw） -----------------------------------------------------
+// 「控えを配ったが壊れていた」ときに利用者が自力で戻れる唯一の即時手段。
+// sw 側の unregister だけでは、同じページの JS が即座に登録し直してしまう。
+
+test("shouldRegisterSonae: ?nosw では登録しない・?sw で復帰する", () => {
+  assert.equal(shouldRegisterSonae({ search: "", optedOut: false }), true);
+  assert.equal(shouldRegisterSonae({ search: "?nosw", optedOut: false }), false);
+  // 離脱は端末に残るので、印が付いていれば素の URL でも登録しない
+  assert.equal(shouldRegisterSonae({ search: "", optedOut: true }), false);
+  // 明示的な復帰は印より強い
+  assert.equal(shouldRegisterSonae({ search: "?sw", optedOut: true }), true);
+});
+
+test("nextOptOut: ?nosw で印を付け、?sw で外す", () => {
+  assert.equal(nextOptOut("?nosw", false), true);
+  assert.equal(nextOptOut("", true), true, "印は次の訪問にも残る");
+  assert.equal(nextOptOut("?sw", true), false);
+  assert.equal(nextOptOut("?utm_source=x", false), false);
+});
+
+// --- 世代キャッシュの不変条件 --------------------------------------------
+
+test("sw.js: 焼き込まれていない版は install で落とす（黙って劣化モードで動かない）", () => {
+  assert.match(SW_SRC, /BUILD === "__BUILD__" \|\| REQUIRED\.length === 0/);
+  assert.match(SW_SRC, /throw new Error\("sw is not stamped"\)/);
+});
+
+test("sw.js: 世代の控えを書くのは install だけ（navigate の書き戻しを持たない）", () => {
+  const nf = SW_SRC.slice(SW_SRC.indexOf("async function networkFirstWithFallback"));
+  const body = nf.slice(0, nf.indexOf("\nself.addEventListener"));
+  assert.ok(
+    !body.includes("putSafe("),
+    "navigate 経路が世代キャッシュに書き戻すと、HTML だけ新世代・資産は旧世代の版ズレを作れてしまう",
+  );
+});
+
+test("sw.js: オフラインの受け皿の出口は scope 基準の絶対パス", () => {
+  assert.ok(
+    !SW_SRC.includes('href="./tally/"'),
+    "相対リンクは /terms/ や未知パスから開いたときに解決先が外れる",
+  );
+  assert.match(SW_SRC, /new URL\(shell, self\.registration\.scope\)\.pathname/);
+  assert.match(
+    SW_SRC,
+    /REQUIRED\.find\(/,
+    "行き先は焼き込まれた必須一覧から引く（sw.js に手書きの一覧を作らない）",
+  );
+});
+
+test("sw.js: RSC ペイロードはクエリを無視して照合する（?_rsc で永久に外さない）", () => {
+  assert.match(SW_SRC, /index\.txt"\)/);
+  assert.match(SW_SRC, /isRscPayload \? \{ ignoreSearch: true \}/);
+});
+
+test("sw-kill.js: 焼き込みの口を持つ（回復手段がビルドで落ちない）", () => {
+  const kill = readFileSync(new URL("../scripts/sw-kill.js", import.meta.url), "utf8");
+  assert.ok(kill.includes('const BUILD = "__BUILD__";'));
+  assert.ok(kill.includes('["__REQUIRED__"]'));
+  assert.ok(kill.includes('["__OPTIONAL__"]'));
 });

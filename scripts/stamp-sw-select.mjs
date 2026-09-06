@@ -61,12 +61,12 @@ export function referencedStatic(html) {
  */
 export function splitPrecache(precache, requiredStatic) {
   const requiredPages = ["", "tally/", "index.txt", "tally/index.txt"];
+  // manifest とアイコンは必須にしない。当日 /tally/ を開くのに1バイトも要らず
+  // （ホーム画面起動時の見た目の話）、版にも結合しない。all-or-nothing なので
+  // 必須に入れると、混雑した会場回線でアイコン1枚が落ちるだけで世代ごと
+  // 不成立になり、そなえ中のまま当日を迎えることになる。
   const required = precache.filter(
-    (p) =>
-      requiredPages.includes(p) ||
-      requiredStatic.includes(p) ||
-      p === "manifest.webmanifest" ||
-      APP_IMAGES.has(p),
+    (p) => requiredPages.includes(p) || requiredStatic.includes(p),
   );
   const optional = precache.filter((p) => !required.includes(p));
   return { required, optional };

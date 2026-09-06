@@ -33,6 +33,35 @@ export function normalizeBasePath(raw: string | undefined | null): string {
 }
 
 /**
+ * この読み込みで控えを取りに行ってよいか。
+ *
+ * `?nosw` は「壊れた控えから逃げる」ための最後の手段なので、sw 側の
+ * unregister だけでは足りない（同じページの JS が即座に登録し直してしまう）。
+ * 判定をここに置き、登録そのものを止める。一度 `?nosw` で開いたら端末に
+ * 印を残し、以後の通常アクセスでも登録しない（`?sw` で復帰する）。
+ */
+export function shouldRegisterSonae(input: {
+  search: string;
+  optedOut: boolean;
+}): boolean {
+  const params = new URLSearchParams(input.search);
+  if (params.has("sw")) return true; // 明示的な復帰
+  if (params.has("nosw")) return false;
+  return !input.optedOut;
+}
+
+/** `?nosw` / `?sw` を受けて、離脱の印をどう変えるか。 */
+export function nextOptOut(
+  search: string,
+  current: boolean,
+): boolean {
+  const params = new URLSearchParams(search);
+  if (params.has("sw")) return false;
+  if (params.has("nosw")) return true;
+  return current;
+}
+
+/**
  * Service Worker 本体の URL。`public/sw.js` は basePath 直下に配信される。
  * ページ相対で解決すると /tally/ から登録したときに /tally/sw.js を見に行って
  * しまうため、必ず basePath 基準の絶対パスで組み立てる。
@@ -121,7 +150,10 @@ export function sonaeFuda(state: SonaeState): {
       // これ以上変わらない終端で、利用者の当日の段取りが変わる（電波が要る）。
       // 破線＝進行中／実線＝確定、の対で墨のまま階層をつける。
       return {
-        text: "そなえ不可（当日は電波が要ります）",
+        // 長くすると 375px 幅で状態行が2行に折り返し、行ごと画面外へ落ちる。
+        // 三状態のうち唯一「当日の段取りを変えろ」と言う札が、自分の長さで
+        // 自分を隠すことになる。帰結の詳細は下の sr と FAQ が持つ。
+        text: "そなえ不可（要電波）",
         sr: "（この環境では控えを取れません。会場では電波が必要です）",
         className: "fuda fuda-fuka",
       };

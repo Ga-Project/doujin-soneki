@@ -115,11 +115,13 @@ export function TallyApp() {
   // 1画面に知らせは1本。ただし譲る条件は「この訪問で復元バーを実際に出したか」で、
   // 「保存データを持っているか」ではない。後者にすると、記帳が残っている常連＝
   // まさに当日 会場へ行く人が、以後どの訪問でも知らせを受け取れなくなる。
-  const restoreBarShownThisVisit = useRef(false);
-  if (restored && !restoreDismissed) restoreBarShownThisVisit.current = true;
+  // 判定はその時点の生の条件で行う。ref に latch すると、保存済みの記帳がある
+  // 利用者は毎回の訪問で復元バーが出る＝以後どの訪問でも知らせが出ない、に
+  // 固定される（＝当日に向けて事前にひらく常連ほど受け取れない）。
+  // 生の条件なら「復元バーを閉じた時点で知らせが出る」に落ちる。
   const sonaeObiVisible =
     showSonaeObi &&
-    !restoreBarShownThisVisit.current &&
+    !(restored && !restoreDismissed) &&
     !(loaded && !storageOk);
   // 「見せた」印は描画された回にだけ付ける。譲った回で焼き切ると、
   // 記帳が残っている常連（＝毎回復元バーが出る）が一度も読めなくなる。
@@ -791,9 +793,8 @@ export function TallyApp() {
                 }}
               >
                 <p className="sai">
-                  当日そなえ: ブラウザの共有・メニューから［ホーム画面に追加］を
-                  しておくと、一突きで開けるうえに控えが長持ちします。ブラウザの
-                  データを消すと控えも消えるので、前日にもう一度ひらくと確実です。
+                  {"当日そなえ: ブラウザの共有・メニューから［ホーム画面に追加］をしておくと、一突きで開けるうえに控えが長持ちします。"}
+                  {"ブラウザのデータを消すとアプリの控えも消えるので、前日にもう一度ひらくと確実です。"}
                 </p>
                 {wakeSupported && (
                   <label className="sumi-check">

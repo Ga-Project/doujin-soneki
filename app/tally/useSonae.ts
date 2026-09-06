@@ -13,13 +13,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  nextOptOut,
   resolveSonaeState,
+  shouldRegisterSonae,
   swPath,
   swScope,
   tallyShellUrl,
   type SonaeState,
 } from "@/lib/offline";
-import { SONAE_SEEN_NAME } from "../config";
+import { SONAE_OPTOUT_NAME, SONAE_SEEN_NAME } from "../config";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH;
 
@@ -41,11 +43,51 @@ export function markObiSeen(): void {
   }
 }
 
+/**
+ * 控えを撤去する。`?nosw` の逃げ道は sw 側の unregister だけでは成立しない
+ * （同じページの JS が即座に登録し直す）ので、ページ側からも消しに行く。
+ * 壊れた sw の fetch ハンドラに依存しないため、これが最後の頼りになる。
+ */
+function removeSonae(): Promise<void> {
+  return navigator.serviceWorker
+    .getRegistrations()
+    .then((rs) => Promise.all(rs.map((r) => r.unregister())))
+    .then(() => caches.keys())
+    .then((ks) =>
+      Promise.all(
+        ks.filter((k) => k.startsWith("soneki-")).map((k) => caches.delete(k)),
+      ),
+    )
+    .then(() => undefined)
+    .catch(() => undefined);
+}
+
+/** 端末に残した離脱の印を読み書きする（読めない環境では URL だけで判断する）。 */
+function syncOptOut(search: string): boolean {
+  try {
+    const current = window.localStorage.getItem(SONAE_OPTOUT_NAME) !== null;
+    const next = nextOptOut(search, current);
+    if (next !== current) {
+      if (next) window.localStorage.setItem(SONAE_OPTOUT_NAME, "1");
+      else window.localStorage.removeItem(SONAE_OPTOUT_NAME);
+    }
+    return next;
+  } catch {
+    return nextOptOut(search, false);
+  }
+}
+
 /** Service Worker を登録する（冪等）。全ページから呼ばれる。 */
 export function registerSonae(): Promise<boolean> {
   // 開発時は登録しない。控えが効くと編集が画面に反映されなくなる。
   if (process.env.NODE_ENV !== "production") return Promise.resolve(false);
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+    return Promise.resolve(false);
+  }
+  const search = typeof location === "undefined" ? "" : location.search;
+  const optedOut = syncOptOut(search);
+  if (!shouldRegisterSonae({ search, optedOut })) {
+    void removeSonae();
     return Promise.resolve(false);
   }
   return navigator.serviceWorker

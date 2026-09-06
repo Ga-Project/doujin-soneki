@@ -10,6 +10,16 @@
  * を行い、以後は素の（Service Worker の無い）サイトに戻る。
  */
 
+// ビルド後の焼き込み（scripts/stamp-sw.mjs）はこの3つの宣言を必須にしている。
+// kill 版は何も控えないので中身は使わないが、宣言が無いとビルドが落ち、
+// **まさに kill switch が要る場面で配れない**（回復手段が出荷不能になる）。
+const BUILD = "__BUILD__";
+const REQUIRED = ["__REQUIRED__"].filter((p) => p !== "__REQUIRED__");
+const OPTIONAL = ["__OPTIONAL__"].filter((p) => p !== "__OPTIONAL__");
+void BUILD;
+void REQUIRED;
+void OPTIONAL;
+
 self.addEventListener("install", () => self.skipWaiting());
 
 self.addEventListener("activate", (event) => {

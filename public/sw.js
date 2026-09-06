@@ -41,6 +41,16 @@ const OPTIONAL = ["__OPTIONAL__"].filter((p) => p !== "__OPTIONAL__");
 // これを過ぎたら控えを返す。控えが無ければネットワークの完了を待つ。
 const NETWORK_TIMEOUT_MS = 3000;
 
+// 任意分の取得に与える上限（ms）。必須が揃っているのに任意の沈黙で
+// install が終わらない、という人質状態を作らないため。
+const OPTIONAL_TIMEOUT_MS = 8000;
+
+// `?nosw` を受けた後は、この版は何も横取りしない。
+// 逃げ道のページ自身が読む資産（`_next/static/...`）には `?nosw` が付かないので
+// 通常経路に落ち、`caches.open(CACHE)` が**消したばかりの控えを作り直す**
+// （逃げたつもりの端末に控えが残る／実測で確認）。フラグで介入ごと止める。
+let optedOut = false;
+
 /** scope 基準の絶対 URL に解決する。 */
 function scoped(path) {
   return new URL(path, self.registration.scope).toString();
@@ -64,14 +74,30 @@ function matchPage(cache, request) {
   return cache.match(request, { ignoreSearch: true, ignoreVary: true });
 }
 
-/** 資産の照合。クエリは区別する（キャッシュ破りを殺さない）。 */
+/**
+ * 資産の照合。クエリは区別する（キャッシュ破りを殺さない）。
+ * ただし RSC ペイロード（`index.txt`）だけは例外で、Next が毎回
+ * `?_rsc=<hash>` を付けて要求するため、クエリを見ると控えに永久に当たらない。
+ * 静的 export では同一ファイルへの CDN 回避クエリなので無視して正しい。
+ */
 function matchAsset(cache, request) {
-  return cache.match(request, { ignoreVary: true });
+  const isRscPayload = new URL(request.url).pathname.endsWith("/index.txt");
+  return cache.match(request, {
+    ignoreVary: true,
+    ...(isRscPayload ? { ignoreSearch: true } : {}),
+  });
 }
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
+      // 焼き込まれていない版は名乗らせない。REQUIRED が空のまま活きると
+      // 「何も控えないのに install は成功し、全 GET を溜め込むだけの世代なし
+      // ワーカー」に静かに退化する（そのとき札は「そなえ済」と出てしまう）。
+      // 落としておけば、サイトは Service Worker が居ないのと同じ挙動に戻る。
+      if (BUILD === "__BUILD__" || REQUIRED.length === 0) {
+        throw new Error("sw is not stamped");
+      }
       // 必須分は all-or-nothing（版ズレを構造的に防ぐ）。
       const entries = await Promise.all(
         REQUIRED.map(async (path) => {
@@ -105,11 +131,17 @@ self.addEventListener("install", (event) => {
 
       // 周辺ページは取れたら控える（取れなくても世代は成立させる）。
       // 必須集合を小さく保つほど、混雑した回線での成立率が上がる。
+      // 任意分に時間切れを付ける。付けないと、必須が全て揃っているのに
+      // 任意の1本が無応答（エラーではなく沈黙）なだけで install が完了せず、
+      // activate も「そなえ済」への繰り上げも起きない。
       await Promise.all(
         OPTIONAL.map(async (path) => {
           const url = scoped(path);
           try {
-            const res = await fetch(url, { cache: "reload" });
+            const res = await fetch(url, {
+              cache: "reload",
+              signal: AbortSignal.timeout(OPTIONAL_TIMEOUT_MS),
+            });
             if (res.ok) await putSafe(cache, url, res);
           } catch {
             /* 任意なので取れなくてよい */
@@ -143,14 +175,23 @@ self.addEventListener("activate", (event) => {
 });
 
 /** 控えが無いページをオフラインで開いたときの最後の受け皿。 */
-function offlineNotice() {
+function offlineNotice(request) {
   // 別ページの HTML を代わりに返すと「カウンターを開いたのにシミュレータが出る」
   // という取り違えになる。何が起きているかだけを正直に出す。
   // ⚠️ 色は app/choba.css のトークンと同値の複製（Service Worker から CSS を
   //    読めないため避けられない）。片方を変えたら両方直すこと。対応は:
   //      #f9f7f0 = --kami(昼) / #1f242e = --sumi(昼) / #fefdfb = --kami-2(昼)
-  //      #151820 = --kami(夜) / #ede9de = --sumi(夜) / #1f2229 = --kami-2(夜)
-  //      #2f5aa0 = --ai(昼)
+  //      #15181e = --kami(夜) / #ede9de = --sumi(夜) / #1f2229 = --kami-2(夜)
+  //      #2f5aa0 = --ai(昼) / #84b1eb = --ai(夜)
+  //    夜帳のリンク色を落とすと、この画面で唯一操作できる要素が 2.34:1
+  //    （AA 未達）になる。昼夜の対で必ず持つこと。
+  // 相対 URL で書くと、この画面が出る場面（/terms/ や未知パスを圏外で開いた時）
+  // ほど解決先が外れる。唯一の出口なので scope 基準の絶対パスで組む。
+  // 行き先は手書きせず、焼き込まれた必須一覧から引く（lib/offline.ts の
+  // SHELL_PATHS が正本で、sw.js 側に二重定義を作らないため）。
+  const shell = REQUIRED.find((p) => p.endsWith("/") && p !== "") ?? "";
+  const tallyHref = new URL(shell, self.registration.scope).pathname;
+  void request;
   const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ひらけません — 同人ソンエキ</title>
@@ -160,12 +201,12 @@ main{max-width:28rem;padding:24px;border:2px solid #1f242e;background:#fefdfb}
 h1{font-family:"Hiragino Mincho ProN","Yu Mincho",serif;font-size:20px;margin:0 0 12px}
 p{margin:8px 0 0;font-size:14px;line-height:1.9}
 a{color:#2f5aa0}
-@media(prefers-color-scheme:dark){body{background:#151820;color:#ede9de}main{background:#1f2229;border-color:#ede9de}}
+@media(prefers-color-scheme:dark){body{background:#15181e;color:#ede9de}main{background:#1f2229;border-color:#ede9de}a{color:#84b1eb}}
 </style></head><body><main>
 <h1>このページの控えがありません</h1>
 <p>電波の届くところで一度ひらくと、次からは通信が無くても開けるようになります。</p>
 <p>すでに記帳した内容は、この端末の中に残っています。消えていません。</p>
-<p><a href="./tally/">頒布カウンターをひらく</a></p>
+<p><a href="${tallyHref}">頒布カウンターをひらく</a></p>
 </main></body></html>`;
   return new Response(html, {
     status: 503,
@@ -176,18 +217,12 @@ a{color:#2f5aa0}
 /** ネットワークを待ちつつ、時間切れなら控えを返す（控えが無ければ待ち続ける）。 */
 async function networkFirstWithFallback(event, request, cache) {
   const cached = await matchPage(cache, request);
-  const network = fetch(request)
-    .then(async (res) => {
-      // 取れた本文だけを控えに反映する（エラーページで上書きしない）。
-      // クエリを落としたキーで書き、utm 違いの重複が溜まらないようにする。
-      if (res.ok) {
-        const key = new URL(request.url);
-        key.search = "";
-        await putSafe(cache, key.toString(), res.clone());
-      }
-      return res;
-    })
-    .catch(() => null);
+  // ネットワークで取れた本文を**世代の控えに書き戻さない**。
+  // 書き戻すと「HTML だけ新しい世代・JS は古い世代のまま」という版ズレを
+  // 世代キャッシュの内側に作れてしまう（install の all-or-nothing が守って
+  // いる不変条件を、実行時の1行が破る）。控えの更新は
+  // 「sw の更新 → install → activate」だけが行う。
+  const network = fetch(request).catch(() => null);
   // 勝敗が決まっても裏の取得と控えへの反映は最後まで走らせる
   event.waitUntil(network);
 
@@ -201,12 +236,14 @@ async function networkFirstWithFallback(event, request, cache) {
     return winner ?? cached;
   }
 
-  return (await network) ?? offlineNotice();
+  return (await network) ?? offlineNotice(request);
 }
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
+  // 離脱済みならこの版は何もしない（消した控えを作り直さない）
+  if (optedOut) return;
 
   const url = new URL(request.url);
   // 逃げ道: ?nosw のページを開いたら、この登録自体を解除する。
@@ -214,7 +251,19 @@ self.addEventListener("fetch", (event) => {
   // そのページが読む JS/CSS は結局ここを通ってしまう（＝逃がせない）。
   if (url.searchParams.has("nosw")) {
     if (request.mode === "navigate") {
-      event.waitUntil(self.registration.unregister());
+      optedOut = true;
+      // 登録の解除と控えの破棄をここで完結させる。ページ側にも同じ撤去は
+      // 置いてあるが、そちらは JS が動くことが前提。壊れた版から逃げる手段が
+      // 「アプリが正常に動くこと」に依存していては、要る場面で効かない。
+      event.waitUntil(
+        (async () => {
+          const names = await caches.keys();
+          await Promise.all(
+            names.filter((n) => n.startsWith("soneki-")).map((n) => caches.delete(n)),
+          );
+          await self.registration.unregister();
+        })(),
+      );
     }
     return;
   }
