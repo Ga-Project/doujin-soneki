@@ -20,7 +20,7 @@ import {
   tallyShellUrl,
   type SonaeState,
 } from "@/lib/offline";
-import { SONAE_SEEN_NAME } from "../config";
+import { SONAE_ENABLED, SONAE_SEEN_NAME } from "../config";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH;
 
@@ -78,8 +78,10 @@ export function registerSonae(): Promise<ServiceWorkerRegistration | null> {
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
     return Promise.resolve(null);
   }
+  // 止め方（kill switch）が効いている配信では、そもそも登録しない。
+  // ここを通すと、取り消し版が入り直して解除と再読み込みを繰り返す。
   const search = typeof location === "undefined" ? "" : location.search;
-  if (!shouldRegisterSonae({ search })) {
+  if (!SONAE_ENABLED || !shouldRegisterSonae({ search })) {
     void removeSonae();
     return Promise.resolve(null);
   }

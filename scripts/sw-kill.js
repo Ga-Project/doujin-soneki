@@ -33,7 +33,10 @@ self.addEventListener("activate", (event) => {
         names.filter((n) => n.startsWith("soneki-")).map((n) => caches.delete(n)),
       );
       await self.registration.unregister();
-      // 制御下のページを、Service Worker の居ない状態で開き直させる
+      // 制御下のページを、Service Worker の居ない状態で開き直させる。
+      // 開き直した先が登録し直すとこの版が入り直し、解除と再読み込みを
+      // 繰り返す（無限ループ）。ページ側の登録は app/config.ts の
+      // SONAE_ENABLED = false で止めておくこと。片方だけでは止まらない。
       const clients = await self.clients.matchAll({ type: "window" });
       for (const client of clients) client.navigate(client.url);
     })(),

@@ -421,3 +421,30 @@ test("useSonae: install の失敗を見届ける（そなえ中で止めない�
   // 活きている版があるなら、畳まれたのは更新の試行だけ（控えは使える）
   assert.match(src, /reg\.active === null/);
 });
+
+test("kill switch: ページ側の登録も止められる（再読み込みのループにしない）", () => {
+  // 取り消し版は制御下のページを開き直させる。開き直した先がまた登録すると
+  // 取り消し版が入り直し、解除と再読み込みを繰り返して素のサイトへ戻れない。
+  // 差し替えと対で、ページ側の登録を止める札が要る。
+  const config = readFileSync(
+    new URL("../app/config.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(config, /export const SONAE_ENABLED: boolean = true;/);
+
+  const src = readFileSync(
+    new URL("../app/tally/useSonae.ts", import.meta.url),
+    "utf8",
+  );
+  const body = src.slice(src.indexOf("export function registerSonae"));
+  const gate = body.indexOf("SONAE_ENABLED");
+  const register = body.indexOf(".register(");
+  assert.ok(gate > 0 && register > 0, "札と登録を見つけられていない（検査が空振り）");
+  assert.ok(gate < register, "札を見る前に登録している");
+
+  // 手順が片方だけにならないよう、両方を README に書いてある
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const kill = readme.slice(readme.indexOf("### 控えが壊れたときの止め方"));
+  assert.ok(kill.includes("sw-kill.js"), "差し替えの手順が無い");
+  assert.ok(kill.includes("SONAE_ENABLED"), "ページ側を止める手順が無い");
+});

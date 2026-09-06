@@ -20,6 +20,21 @@ export const TALLY_STORAGE_NAME = "soneki.tally.v1";
 /** 「この端末に控えを取りました」の知らせを既に見せたか（当日そなえ・1回きり）。 */
 export const SONAE_SEEN_NAME = "soneki.sonae.v1";
 
+/**
+ * 当日そなえ（Service Worker の登録）を行うか。
+ *
+ * 止め方（kill switch）の片割れ。`public/sw.js` を `scripts/sw-kill.js` の中身に
+ * 差し替えるだけでは止まらない。取り消し版は登録を解除したうえで制御下のページを
+ * 開き直させるが、開き直したページがこの登録を **また** 行うと、取り消し版が
+ * 入り直して解除と再読み込みを繰り返す（再読み込みの無限ループになり、
+ * 素のサイトへ戻れない）。差し替えと同時にこれを false にして、ページ側の
+ * 登録ごと止める。手順は README「当日そなえ（オフライン対応）」を参照。
+ *
+ * 型を boolean と明示するのは、リテラル型に狭まると差し替え側の分岐が
+ * 到達不能として扱われるため。
+ */
+export const SONAE_ENABLED: boolean = true;
+
 
 /**
  * 委託先プリセット（中立なテキスト表記のみ。ロゴ・商標表現は使わない）。
