@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, writeFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SHELL_PATHS } from "../lib/offline.ts";
+import { PRIMARY_SHELL, SHELL_PATHS } from "../lib/offline.ts";
 import {
   referencedStatic,
   selectPrecache,
@@ -68,8 +68,11 @@ if (uncovered.length > 0) {
 const { required, optional } = splitPrecache(precache, [...requiredStatic]);
 
 // 世代名 = 控えるものの内容ハッシュ。中身が1バイトでも変われば別世代になる。
-// 控えないファイル（og.png・sitemap 等）は含めない — 差し替えただけで
-// 全端末が世代ごと取り直すのは無駄なので。
+// 控えないファイル（og.png・sitemap 等）は含めない。
+// なお Next の buildId は毎ビルド変わり、それが HTML と index.txt の本文に
+// 入るため、**同じソースからビルドし直すだけで世代名は変わる**。
+// 「差し替えないファイルなら世代を跨げる」ことは期待できない。
+// 結果として main への push は内容によらず全端末に控えの取り直しを起こす。
 const digest = createHash("sha256");
 for (const p of precache) {
   digest.update(p);
@@ -81,6 +84,7 @@ const build = digest.digest("hex").slice(0, 12);
 // 先に現れる説明コメントの方が差し替わり、定数はプレースホルダのまま残る
 // ＝全ビルドが同じ世代名を共有して版ズレが復活する（実際に一度踏んだ）。
 const BUILD_DECL = 'const BUILD = "__BUILD__";';
+const SHELL_MAIN_DECL = 'const SHELL_MAIN = "__SHELL_MAIN__";';
 const REQUIRED_DECL = '["__REQUIRED__"]';
 const OPTIONAL_DECL = '["__OPTIONAL__"]';
 
@@ -88,6 +92,7 @@ const swPath = join(OUT, "sw.js");
 const src = await readFile(swPath, "utf8");
 if (
   !src.includes(BUILD_DECL) ||
+  !src.includes(SHELL_MAIN_DECL) ||
   !src.includes(REQUIRED_DECL) ||
   !src.includes(OPTIONAL_DECL)
 ) {
@@ -96,12 +101,14 @@ if (
 }
 const stamped = src
   .replace(BUILD_DECL, `const BUILD = "${build}";`)
+  .replace(SHELL_MAIN_DECL, `const SHELL_MAIN = ${JSON.stringify(PRIMARY_SHELL)};`)
   .replace(REQUIRED_DECL, JSON.stringify(required))
   .replace(OPTIONAL_DECL, JSON.stringify(optional));
 
 // 焼き込み後にプレースホルダが残っていないことを確かめる（黙って素通りさせない）
 if (
   /const BUILD = "__BUILD__"/.test(stamped) ||
+  stamped.includes(SHELL_MAIN_DECL) ||
   stamped.includes(REQUIRED_DECL) ||
   stamped.includes(OPTIONAL_DECL)
 ) {

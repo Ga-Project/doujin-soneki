@@ -13,7 +13,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  nextOptOut,
   resolveSonaeState,
   shouldRegisterSonae,
   swPath,
@@ -21,7 +20,7 @@ import {
   tallyShellUrl,
   type SonaeState,
 } from "@/lib/offline";
-import { SONAE_OPTOUT_NAME, SONAE_SEEN_NAME } from "../config";
+import { SONAE_SEEN_NAME } from "../config";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH;
 
@@ -62,21 +61,6 @@ function removeSonae(): Promise<void> {
     .catch(() => undefined);
 }
 
-/** 端末に残した離脱の印を読み書きする（読めない環境では URL だけで判断する）。 */
-function syncOptOut(search: string): boolean {
-  try {
-    const current = window.localStorage.getItem(SONAE_OPTOUT_NAME) !== null;
-    const next = nextOptOut(search, current);
-    if (next !== current) {
-      if (next) window.localStorage.setItem(SONAE_OPTOUT_NAME, "1");
-      else window.localStorage.removeItem(SONAE_OPTOUT_NAME);
-    }
-    return next;
-  } catch {
-    return nextOptOut(search, false);
-  }
-}
-
 /** Service Worker を登録する（冪等）。全ページから呼ばれる。 */
 export function registerSonae(): Promise<boolean> {
   // 開発時は登録しない。控えが効くと編集が画面に反映されなくなる。
@@ -85,8 +69,7 @@ export function registerSonae(): Promise<boolean> {
     return Promise.resolve(false);
   }
   const search = typeof location === "undefined" ? "" : location.search;
-  const optedOut = syncOptOut(search);
-  if (!shouldRegisterSonae({ search, optedOut })) {
+  if (!shouldRegisterSonae({ search })) {
     void removeSonae();
     return Promise.resolve(false);
   }

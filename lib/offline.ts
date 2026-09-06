@@ -35,30 +35,18 @@ export function normalizeBasePath(raw: string | undefined | null): string {
 /**
  * この読み込みで控えを取りに行ってよいか。
  *
- * `?nosw` は「壊れた控えから逃げる」ための最後の手段なので、sw 側の
- * unregister だけでは足りない（同じページの JS が即座に登録し直してしまう）。
- * 判定をここに置き、登録そのものを止める。一度 `?nosw` で開いたら端末に
- * 印を残し、以後の通常アクセスでも登録しない（`?sw` で復帰する）。
+ * `?nosw` は「壊れた控えから逃げる」ための最後の手段。sw 側の unregister
+ * だけでは足りない（同じページの JS が即座に登録し直してしまう）ので、
+ * 判定をここに置いて登録そのものを止める。
+ *
+ * 判断は **その読み込み限り** にする。端末に離脱を焼き付けると、
+ * 以後どの訪問でも札が「そなえ不可（要電波）＝この環境では取れません」に
+ * なり、原因が自分の操作であることが画面から分からないまま
+ * 「当日は電波が要る」と誤って段取りを組ませる。直した版は
+ * `updateViaCache: "none"` で確実に届くので、自動で復帰させる方が正しい。
  */
-export function shouldRegisterSonae(input: {
-  search: string;
-  optedOut: boolean;
-}): boolean {
-  const params = new URLSearchParams(input.search);
-  if (params.has("sw")) return true; // 明示的な復帰
-  if (params.has("nosw")) return false;
-  return !input.optedOut;
-}
-
-/** `?nosw` / `?sw` を受けて、離脱の印をどう変えるか。 */
-export function nextOptOut(
-  search: string,
-  current: boolean,
-): boolean {
-  const params = new URLSearchParams(search);
-  if (params.has("sw")) return false;
-  if (params.has("nosw")) return true;
-  return current;
+export function shouldRegisterSonae(input: { search: string }): boolean {
+  return !new URLSearchParams(input.search).has("nosw");
 }
 
 /**
@@ -89,6 +77,13 @@ export const SHELL_PATHS: readonly string[] = [
   "terms/",
   "privacy/",
 ];
+
+/**
+ * 圏外の受け皿から戻す先＝当日ひらくページ。`SHELL_PATHS` の位置に依存させず
+ * 名前で持つ（必須一覧の辞書順から拾うと、ページが増えた日に唯一の出口が
+ * 黙って別ページへ移り、ラベルだけ「頒布カウンター」のまま残る）。
+ */
+export const PRIMARY_SHELL = "tally/";
 
 /**
  * 控えの実在を確かめる URL。当日ひらくのはこの1枚で、これが控えに無ければ
@@ -141,7 +136,7 @@ export function sonaeFuda(state: SonaeState): {
       };
     case "junbi":
       return {
-        text: "そなえ中",
+        text: "そなえ中（開いたまま）",
         sr: "（控えを取っています。しばらく開いたままにしてください）",
         className: "fuda fuda-junbi",
       };

@@ -28,6 +28,11 @@
 const BUILD = "__BUILD__";
 const CACHE = `soneki-${BUILD}`;
 
+// 圏外の受け皿から戻す先。stamp-sw.mjs が lib/offline.ts の PRIMARY_SHELL を
+// 焼き込む。必須一覧から辞書順で拾うと、ページが増えた日に唯一の出口が
+// 黙って別ページへ移り、ラベルだけ「頒布カウンター」のまま残る。
+const SHELL_MAIN = "__SHELL_MAIN__";
+
 // この世代で控える URL（scope 相対）。stamp-sw.mjs が配列ごと置換する。
 // 未置換のときは空。なお開発時はそもそも登録しない（registerSonae が
 // 本番ビルドでのみ登録する）ので、この経路には入らない。
@@ -187,10 +192,9 @@ function offlineNotice(request) {
   //    （AA 未達）になる。昼夜の対で必ず持つこと。
   // 相対 URL で書くと、この画面が出る場面（/terms/ や未知パスを圏外で開いた時）
   // ほど解決先が外れる。唯一の出口なので scope 基準の絶対パスで組む。
-  // 行き先は手書きせず、焼き込まれた必須一覧から引く（lib/offline.ts の
-  // SHELL_PATHS が正本で、sw.js 側に二重定義を作らないため）。
-  const shell = REQUIRED.find((p) => p.endsWith("/") && p !== "") ?? "";
-  const tallyHref = new URL(shell, self.registration.scope).pathname;
+  // 行き先は手書きせず、焼き込まれた値を使う（lib/offline.ts が正本で、
+  // sw.js 側に二重定義を作らないため）。
+  const tallyHref = new URL(SHELL_MAIN, self.registration.scope).pathname;
   void request;
   const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

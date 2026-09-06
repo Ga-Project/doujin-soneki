@@ -19,8 +19,7 @@ export const TALLY_STORAGE_NAME = "soneki.tally.v1";
 
 /** 「この端末に控えを取りました」の知らせを既に見せたか（当日そなえ・1回きり）。 */
 export const SONAE_SEEN_NAME = "soneki.sonae.v1";
-/** 控えを取らない（`?nosw` で離脱した）ことを端末に覚えさせる印。`?sw` で戻す。 */
-export const SONAE_OPTOUT_NAME = "soneki.nosw.v1";
+
 
 /**
  * 委託先プリセット（中立なテキスト表記のみ。ロゴ・商標表現は使わない）。

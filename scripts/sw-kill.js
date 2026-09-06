@@ -14,9 +14,11 @@
 // kill 版は何も控えないので中身は使わないが、宣言が無いとビルドが落ち、
 // **まさに kill switch が要る場面で配れない**（回復手段が出荷不能になる）。
 const BUILD = "__BUILD__";
+const SHELL_MAIN = "__SHELL_MAIN__";
 const REQUIRED = ["__REQUIRED__"].filter((p) => p !== "__REQUIRED__");
 const OPTIONAL = ["__OPTIONAL__"].filter((p) => p !== "__OPTIONAL__");
 void BUILD;
+void SHELL_MAIN;
 void REQUIRED;
 void OPTIONAL;
 

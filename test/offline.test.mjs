@@ -14,7 +14,7 @@ import {
   swScope,
   resolveSonaeState,
   shouldRegisterSonae,
-  nextOptOut,
+  PRIMARY_SHELL,
   sonaeFuda,
   tallyShellUrl,
   SHELL_PATHS,
@@ -249,20 +249,13 @@ test("referencedStatic: basePath 無しの配信でも scope 相対に揃う", (
 // 「控えを配ったが壊れていた」ときに利用者が自力で戻れる唯一の即時手段。
 // sw 側の unregister だけでは、同じページの JS が即座に登録し直してしまう。
 
-test("shouldRegisterSonae: ?nosw では登録しない・?sw で復帰する", () => {
-  assert.equal(shouldRegisterSonae({ search: "", optedOut: false }), true);
-  assert.equal(shouldRegisterSonae({ search: "?nosw", optedOut: false }), false);
-  // 離脱は端末に残るので、印が付いていれば素の URL でも登録しない
-  assert.equal(shouldRegisterSonae({ search: "", optedOut: true }), false);
-  // 明示的な復帰は印より強い
-  assert.equal(shouldRegisterSonae({ search: "?sw", optedOut: true }), true);
-});
-
-test("nextOptOut: ?nosw で印を付け、?sw で外す", () => {
-  assert.equal(nextOptOut("?nosw", false), true);
-  assert.equal(nextOptOut("", true), true, "印は次の訪問にも残る");
-  assert.equal(nextOptOut("?sw", true), false);
-  assert.equal(nextOptOut("?utm_source=x", false), false);
+test("shouldRegisterSonae: ?nosw のときだけ登録しない（その読み込み限り）", () => {
+  assert.equal(shouldRegisterSonae({ search: "" }), true);
+  assert.equal(shouldRegisterSonae({ search: "?nosw" }), false);
+  assert.equal(shouldRegisterSonae({ search: "?utm_source=x" }), true);
+  // 端末に離脱を焼き付けない。焼き付けると、以後どの訪問でも札が
+  // 「そなえ不可（要電波）」になり、原因が自分の操作だと画面から分からない。
+  assert.equal(shouldRegisterSonae({ search: "" }), true);
 });
 
 // --- 世代キャッシュの不変条件 --------------------------------------------
@@ -273,6 +266,12 @@ test("sw.js: 焼き込まれていない版は install で落とす（黙って�
 });
 
 test("sw.js: 世代の控えを書くのは install だけ（navigate の書き戻しを持たない）", () => {
+  // 対象の存在を先に固定する。関数名が変わると indexOf が -1 になり、
+  // 検査対象ゼロの空文字列を調べて「通る」テストに化ける。
+  assert.ok(
+    SW_SRC.includes("async function networkFirstWithFallback"),
+    "検査対象の関数が見つからない（テストが不活性化している）",
+  );
   const nf = SW_SRC.slice(SW_SRC.indexOf("async function networkFirstWithFallback"));
   const body = nf.slice(0, nf.indexOf("\nself.addEventListener"));
   assert.ok(
@@ -286,12 +285,22 @@ test("sw.js: オフラインの受け皿の出口は scope 基準の絶対パス
     !SW_SRC.includes('href="./tally/"'),
     "相対リンクは /terms/ や未知パスから開いたときに解決先が外れる",
   );
-  assert.match(SW_SRC, /new URL\(shell, self\.registration\.scope\)\.pathname/);
-  assert.match(
-    SW_SRC,
-    /REQUIRED\.find\(/,
-    "行き先は焼き込まれた必須一覧から引く（sw.js に手書きの一覧を作らない）",
+  assert.match(SW_SRC, /new URL\(SHELL_MAIN, self\.registration\.scope\)\.pathname/);
+  // 必須一覧から辞書順で拾う位置依存に戻さない（ページが増えた日に
+  // 出口だけ黙って別ページへ移り、ラベルは「頒布カウンター」のまま残る）
+  assert.ok(
+    !SW_SRC.includes("REQUIRED.find("),
+    "出口を必須一覧の並び順から推測してはいけない",
   );
+  assert.ok(SW_SRC.includes('const SHELL_MAIN = "__SHELL_MAIN__";'));
+});
+
+test("受け皿の出口は PRIMARY_SHELL に解決する（本番 scope で実測）", () => {
+  const href = new URL(
+    PRIMARY_SHELL,
+    "https://ga-project.github.io/doujin-soneki/",
+  ).pathname;
+  assert.equal(href, "/doujin-soneki/tally/");
 });
 
 test("sw.js: RSC ペイロードはクエリを無視して照合する（?_rsc で永久に外さない）", () => {
