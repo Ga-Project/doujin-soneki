@@ -60,6 +60,13 @@ const NETWORK_TIMEOUT_MS = 3000;
 // install が終わらない、という人質状態を作らないため。
 const OPTIONAL_TIMEOUT_MS = 8000;
 
+// 立ち上げ・撤去の1手ごとに置く上限（ms）。記憶域の読み書きと、制御の
+// 引き取り（clients.claim）が対象。どちらも回線に依存せず、正常な端末なら
+// 一瞬で返る。返らない端末で無期限に待つと install や activate が開いたままに
+// なり、札は「そなえ中（開いたまま）」から動かない。失敗としても畳まれない
+// ので再試行もされず、利用者は取れない控えを待ち続ける。
+const STEP_TIMEOUT_MS = 5000;
+
 // 別置きの裏更新に与える上限（ms）。応答は控えから既に返しているので、
 // ここで待ち続ける理由は無い。期限が無いと、沈黙した1本が waitUntil を
 // 握ったまま Service Worker を生かし続ける。
@@ -84,6 +91,24 @@ const REQUIRED_TIMEOUT_MS = 30000;
 // 通常経路に落ち、`caches.open(CACHE)` が**消したばかりの控えを作り直す**
 // （逃げたつもりの端末に控えが残る／実測で確認）。フラグで介入ごと止める。
 let optedOut = false;
+
+/**
+ * 古い世代を掃除する。残すのは現世代の控えと、その世代に紐づく別置きの2つだけ。
+ * 規則を二度書くと、片方だけ「残す集合」を直した日に、配布中の控えを抜くか、
+ * 消し損ねるかになる。
+ *
+ * 開いているページの足元から資産を抜かないことは、呼び出し元がそれぞれ別の
+ * 理由で保証する:
+ *   activate … 旧世代を配っていた版はもう退いている
+ *   install  … 活きた版が無い端末でだけ呼ぶ（配っている控えがそもそも無い）
+ */
+async function sweepStale() {
+  const names = await caches.keys();
+  const stale = names.filter(
+    (n) => n.startsWith("soneki-") && n !== CACHE && n !== RUNTIME,
+  );
+  await Promise.all(stale.map((n) => caches.delete(n)));
+}
 
 /** scope 基準の絶対 URL に解決する。 */
 function scoped(path) {
@@ -285,6 +310,56 @@ function discardBody(res) {
   }
 }
 
+/**
+ * 「読めなかった」の印。**控えに無い（undefined）と必ず区別する**。
+ *
+ * 一緒くたにすると、世代に入っている URL を「無い」と読んでネットワークの
+ * 応答を別置きへ書き、次からそれを返す。会場の捕捉ページが 200 を返す回線
+ * では、ハッシュ付き JS の URL に HTML が貼り付き、封をした世代の外側に
+ * 版ズレが成立する（画面は出るのに操作が効かない＝当日いちばん困る壊れ方）。
+ */
+const UNREADABLE = { unreadable: true };
+
+/**
+ * 記憶域の読みに上限を置く。読めない・返らないなら UNREADABLE。
+ *
+ * 取り出しの経路でここが止まると `respondWith` が永久に解決せず、回線が
+ * 完全でも画面が出ない ＝「Service Worker が居ない方がマシ」という状態を
+ * 作ってしまう。控えを諦めて素通りする方が、必ず軽い。
+ */
+async function readWithin(work) {
+  const clock = timeoutSignal(STEP_TIMEOUT_MS);
+  try {
+    const got = await Promise.race([work, clock.expired]);
+    // 期限切れは false（timeoutSignal の時計）。控えに無い undefined と混ぜない。
+    return got === false ? UNREADABLE : got;
+  } catch {
+    return UNREADABLE;
+  } finally {
+    clock.done();
+  }
+}
+
+/** 控えを開く。開けない・返らないなら UNREADABLE。 */
+function openCache(name) {
+  return readWithin(caches.open(name));
+}
+
+/**
+ * 控えに触らずネットワークへ流す。控えを確かめられなかった回の出口で、
+ * 「Service Worker が居ないのと同じ」に落とすためのもの。
+ */
+async function passThrough(request) {
+  try {
+    return await fetch(request);
+  } catch {
+    // 遷移は上流（networkFirstWithFallback）が受け皿まで面倒を見るので、
+    // ここへ来るのは資産だけ。資産に受け皿は無い（HTML を返すと、読み手は
+    // JS や CSS として解釈して別の壊れ方をする）。
+    return Response.error();
+  }
+}
+
 /** 控えに入れられなくても表示は妨げない（quota 超過などで put は失敗しうる）。 */
 async function putSafe(cache, request, response) {
   try {
@@ -300,7 +375,8 @@ async function putSafe(cache, request, response) {
  * ここ（navigate）専用にする。
  */
 function matchPage(cache, request) {
-  return cache.match(request, { ignoreSearch: true, ignoreVary: true });
+  if (cache === UNREADABLE) return Promise.resolve(UNREADABLE);
+  return readWithin(cache.match(request, { ignoreSearch: true, ignoreVary: true }));
 }
 
 /**
@@ -310,11 +386,14 @@ function matchPage(cache, request) {
  * 静的 export では同一ファイルへの CDN 回避クエリなので無視して正しい。
  */
 function matchAsset(cache, request) {
+  if (cache === UNREADABLE) return Promise.resolve(UNREADABLE);
   const isRscPayload = new URL(request.url).pathname.endsWith("/index.txt");
-  return cache.match(request, {
-    ignoreVary: true,
-    ...(isRscPayload ? { ignoreSearch: true } : {}),
-  });
+  return readWithin(
+    cache.match(request, {
+      ignoreVary: true,
+      ...(isRscPayload ? { ignoreSearch: true } : {}),
+    }),
+  );
 }
 
 /**
@@ -349,18 +428,25 @@ self.addEventListener("install", (event) => {
       // 掃除の機会が来ないまま容量だけが埋まり、やがて put が通らなくなって
       // 控えを永久に持てなくなる。
       // 活きている版がある場合は触らない（今まさに配っている控えを抜く）。
+      // 掃除そのものは best-effort。ここで投げたり返らなかったりすると、
+      // 1本も取りに行かないまま install が落ちる／開いたままになる ＝掃除で
+      // 救うはずだった端末を、掃除のせいで控え無しに固定してしまう。
       if (self.registration.active === null) {
-        const stale = await caches.keys();
-        await Promise.all(
-          stale
-            .filter((n) => n.startsWith("soneki-") && n !== CACHE && n !== RUNTIME)
-            .map((n) => caches.delete(n)),
-        );
+        await atMost(sweepStale(), STEP_TIMEOUT_MS);
       }
 
       // 必須分は all-or-nothing（版ズレを構造的に防ぐ）。
       // 1本ずつ「取得してその場で控える」。期限も1本ごとに張る。
-      const cache = await caches.open(CACHE);
+      // 控えを開く段にも期限を置く（開けないなら控えは持てないので、
+      // 開いたまま止まるより、失敗として畳んで次の機会に回す方が良い）。
+      const opening = timeoutSignal(STEP_TIMEOUT_MS);
+      let cache;
+      try {
+        cache = await Promise.race([caches.open(CACHE), opening.expired]);
+      } finally {
+        opening.done();
+      }
+      if (cache === false) throw new Error("storage stalled");
       const got = await Promise.all(
         REQUIRED.map((path) =>
           fetchInto(cache, scoped(path), REQUIRED_TIMEOUT_MS),
@@ -370,7 +456,9 @@ self.addEventListener("install", (event) => {
         // 取り切れなかった＝この世代は名乗らない。
         // 書きかけを残さない（半端な世代が残ると、版ズレした一式が
         // 「揃っている」ものとして読まれる）。
-        await caches.delete(CACHE);
+        // 後始末にも期限を置く。ここで返らないと install は開いたままになり、
+        // 版は畳まれず（redundant にならず）再試行の機会も来ない。
+        await atMost(caches.delete(CACHE), STEP_TIMEOUT_MS);
         // **throw する**のが要点で、ここで return すると install が「成功」と
         // して解決してしまい、sw.js のバイトが変わらない限り二度と install が
         // 走らない＝一度取りこぼした端末が次のデプロイまで永久に控えを持てない。
@@ -400,16 +488,18 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      // 旧世代を掃除する。activate は全クライアントが離れた後なので、
-      // 開いているページの足元から資産を抜くことにはならない。
-      // 現世代の控えと、その世代に紐づく別置き（runtime）の2つだけ残す。
-      const names = await caches.keys();
-      await Promise.all(
-        names
-          .filter((n) => n.startsWith("soneki-") && n !== CACHE && n !== RUNTIME)
-          .map((n) => caches.delete(n)),
-      );
-      await self.clients.claim();
+      // 旧世代の掃除は始めるだけにして、待つのは制御を引き取った後にする。
+      // 掃除は後片付けにすぎないのに、その決着を待ってから claim すると、
+      // 記憶域が読めない／返らない端末では claim へ届かない（届いても期限の
+      // ぶん遅れる）。そのあいだ控えは揃っているのにページは制御下に入らず、
+      // ページ側は controllerchange を待ち続けて札が「そなえ中（開いたまま）」
+      // で止まる ＝取れている控えを、取れていないかのように見せる。
+      // atMost で括るのは**作る時点**。後から括ると、失敗が誰にも受け取られない
+      // まま次の待ちを跨ぎ、unhandledrejection として worker の外に出る。
+      // どちらの atMost も仕事は止めず、待つのをやめるだけ（失敗も飲む）。
+      const swept = atMost(sweepStale(), STEP_TIMEOUT_MS);
+      await atMost((async () => self.clients.claim())(), STEP_TIMEOUT_MS);
+      await swept;
     })(),
   );
 });
@@ -455,7 +545,10 @@ a{color:#2f5aa0}
 
 /** ネットワークを待ちつつ、時間切れなら控えを返す（控えが無ければ待ち続ける）。 */
 async function networkFirstWithFallback(request, cache) {
-  const cached = await matchPage(cache, request);
+  const hit = await matchPage(cache, request);
+  // 読めなかった回は「控え無し」として進む。ここは控えに書き戻さないので、
+  // 読めないまま進んでも世代に混ざるものが無い。
+  const cached = hit === UNREADABLE ? undefined : hit;
   // ネットワークで取れた本文を**世代の控えに書き戻さない**。
   // 書き戻すと「HTML だけ新しい世代・JS は古い世代のまま」という版ズレを
   // 世代キャッシュの内側に作れてしまう（install の all-or-nothing が守って
@@ -511,13 +604,24 @@ self.addEventListener("fetch", (event) => {
       // 登録の解除と控えの破棄をここで完結させる。ページ側にも同じ撤去は
       // 置いてあるが、そちらは JS が動くことが前提。壊れた版から逃げる手段が
       // 「アプリが正常に動くこと」に依存していては、要る場面で効かない。
+      // 控えの破棄と登録の解除を**別々に**守る。まとめて await すると、記憶域が
+      // 読めない／返らない端末では破棄で止まった時点で解除まで届かず、この版が
+      // 制御を持ったまま残る（optedOut は worker が畳まれるまでの一時的な札
+      // なので、次の起動ではまた横取りが始まる）。逃げ道は壊れた端末でこそ
+      // 効く必要がある。atMost は失敗も沈黙もここで受け止める。
       event.waitUntil(
         (async () => {
-          const names = await caches.keys();
-          await Promise.all(
-            names.filter((n) => n.startsWith("soneki-")).map((n) => caches.delete(n)),
-          );
-          await self.registration.unregister();
+          const purge = (async () => {
+            const names = await caches.keys();
+            // 1本の失敗で残りを止めない（消せた分だけでも減らす）。
+            await Promise.all(
+              names
+                .filter((n) => n.startsWith("soneki-"))
+                .map((n) => caches.delete(n).catch(() => false)),
+            );
+          })();
+          await atMost(purge, STEP_TIMEOUT_MS);
+          await atMost(self.registration.unregister(), STEP_TIMEOUT_MS);
         })(),
       );
     }
@@ -556,7 +660,7 @@ self.addEventListener("fetch", (event) => {
 
 /** 取り出しの本体（控え→別置き→ネットワーク）。 */
 async function respond(event, request) {
-  const cache = await caches.open(CACHE);
+  const cache = await openCache(CACHE);
   if (request.mode === "navigate") {
     return networkFirstWithFallback(request, cache);
   }
@@ -576,11 +680,23 @@ async function respond(event, request) {
   // ここで裏の更新をかけると、新しいデプロイの実体が旧世代の中に混ざり、
   // all-or-nothing が守っている版の一致がその世代の内側で崩れる。
   const shipped = await matchAsset(cache, request);
+  if (shipped === UNREADABLE) {
+    // 世代を確かめられなかった。この回は控えに一切触らずに素通しする。
+    // 先へ進むと、世代に入っているはずの URL にネットワークの応答を別置きへ
+    // 貼り付け、以後それを返す ＝封をした世代の外側に版ズレを作る
+    // （会場の捕捉ページが 200 を返す回線では、JS の URL に HTML が入る）。
+    return passThrough(request);
+  }
   if (shipped) return shipped;
 
   // ここから先は世代に属さない同一オリジンの取得物。書くのは別置きだけ。
-  const runtime = await caches.open(RUNTIME);
-  const cached = await matchAsset(runtime, request);
+  const opened = await openCache(RUNTIME);
+  const runtime = opened === UNREADABLE ? null : opened;
+  const held = runtime === null ? UNREADABLE : await matchAsset(runtime, request);
+  // 別置きを読めなかった回も、書かずに素通しする（何が入っているか分からない
+  // まま上書きすると、次の取り出しでそれを返すことになる）。
+  const cached = held === UNREADABLE ? undefined : held;
+  const writable = held === UNREADABLE ? null : runtime;
   const key = assetKey(request);
 
   // 控え優先で出しつつ裏で更新しておく。
@@ -591,7 +707,7 @@ async function respond(event, request) {
     const budget = timeoutSignal(RUNTIME_TIMEOUT_MS);
     const refresh = fetch(request, { signal: budget.signal })
       .then(async (res) => {
-        if (res.ok) await putSafe(runtime, key, res);
+        if (res.ok) await putSafe(writable, key, res);
         else discardBody(res);
       })
       .catch(() => {
@@ -600,7 +716,13 @@ async function respond(event, request) {
       .then(() => budget.done());
     // signal だけに頼らない。中断が使えない端末では signal が効かず、
     // 沈黙した1本が waitUntil を握ったまま worker を生かし続ける。
-    event.waitUntil(atMost(refresh, RUNTIME_TIMEOUT_MS));
+    try {
+      event.waitUntil(atMost(refresh, RUNTIME_TIMEOUT_MS));
+    } catch {
+      // 引き延ばしを受け付けない状態でも、控えは返す。ここで投げると外側の
+      // 受けが取り直しに行き、控えがあるのに回線の応答（会場の捕捉ページ）を
+      // 返すことになる。
+    }
     return cached;
   }
 
@@ -619,10 +741,10 @@ async function respond(event, request) {
   //
   // ここを try で覆わない。取れた応答を、控えへの書き込みの都合（waitUntil が
   // 受け付けない・複製できない）で捨ててはならない。
-  if (res.ok) {
+  if (res.ok && writable !== null) {
     try {
       event.waitUntil(
-        atMost(putSafe(runtime, key, res.clone()), RUNTIME_TIMEOUT_MS),
+        atMost(putSafe(writable, key, res.clone()), RUNTIME_TIMEOUT_MS),
       );
     } catch {
       /* 控えが1つ増えないだけ。取れた応答はそのまま返す */

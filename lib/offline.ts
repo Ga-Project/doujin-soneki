@@ -128,6 +128,10 @@ export function tallyShellUrl(
  *   "ari"   … 待機中／活性の版が居る。控えは有りうるので失敗と断じない
  *   "nashi" … 版が1つも無い。redundant で畳まれた後＝この端末に控えは無い
  *
+ * "ari" は「まだ失敗ではない」であって「もう安心」ではない。活性の版が無く
+ * 待機中の版だけなら、その版が活性化するまでこの端末は制御下に入らないので、
+ * 呼び出し側（watchSonaeInstall）はそこから先も見届ける。
+ *
  * 「installing が無い＝順調」と読んではならない。登録は全ページで走らせている
  * ので、先に始まった呼び出しの install が、こちらが観測を張るより前に
  * redundant まで進みうる。その版は活性化しないので controllerchange も来ず、
@@ -145,6 +149,14 @@ export function readSonaeWorkers(input: {
 }
 
 /**
+ * 控えの読みを諦めるまでの猶予（ms）。記憶域が**返らない**端末があり、
+ * そこで止まると状態の確定そのものが返らず、札は最初の「そなえ中
+ * （開いたまま）」から二度と動かない（install の失敗も、制御が付いたことも
+ * 画面に出せなくなる）。
+ */
+export const CACHE_READ_MS = 5000;
+
+/**
  * 封をした世代の中に、その URL の控えがあるか。
  *
  * `caches.match()` をそのまま使うとオリジン内の全キャッシュを見るので、
@@ -157,22 +169,38 @@ export function readSonaeWorkers(input: {
  * 有る控えを無いと読んで札が「そなえ中」から動かなくなる。
  * `caches.open()` は使わない（**無ければ作る**ので、読むだけのつもりで
  * 消したばかりの控えを作り直してしまう）。
+ *
+ * 読みには上限を置く（`CACHE_READ_MS`）。返らない記憶域は「控え無し」に畳む
+ * ＝無いのに有ると言うより、有るのに無いと言う方が当日の事故が小さい。
  */
 export async function hasSonaeGeneration(
   store: CacheStorage,
   url: string,
+  /** 読みを諦めるまでの猶予（ms）。試験から短くするためだけの口。 */
+  readMs: number = CACHE_READ_MS,
 ): Promise<boolean> {
-  try {
-    for (const name of await store.keys()) {
-      if (!isSonaeGenerationCache(name)) continue;
-      const hit = await store.match(url, { cacheName: name, ignoreVary: true });
-      if (hit !== undefined) return true;
+  const scan = async (): Promise<boolean> => {
+    try {
+      for (const name of await store.keys()) {
+        if (!isSonaeGenerationCache(name)) continue;
+        const hit = await store.match(url, { cacheName: name, ignoreVary: true });
+        if (hit !== undefined) return true;
+      }
+      return false;
+    } catch {
+      // Cache Storage を読めない環境は控え無しとみなす（無いのに有ると言うより、
+      // 有るのに無いと言う方が当日の事故が小さい）。
+      return false;
     }
-    return false;
-  } catch {
-    // Cache Storage を読めない環境は控え無しとみなす（無いのに有ると言うより、
-    // 有るのに無いと言う方が当日の事故が小さい）。
-    return false;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stalled = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), readMs);
+  });
+  try {
+    return await Promise.race([scan(), stalled]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -183,6 +211,24 @@ export async function hasSonaeGeneration(
  * してしまう。逆に待ち続けると「そなえ中」で永久に止まるので、上限を置く。
  */
 export const WORKER_APPEAR_MS = 5000;
+
+/**
+ * 初回インストールの版が、活性化まで進むのを待つ猶予（ms）。
+ *
+ * 活きた版がまだ無い端末では、install を終えた版はそのまま activate へ進む
+ * （待たせる相手が居ない）。それが済まないまま止まるのは、activate 側が
+ * 返らなくなったときで、その版は制御を引き取らない（clients.claim() まで
+ * 進まない）。controllerchange も来ないので、上限を置かないと札は
+ * 「そなえ中（開いたまま）」で永久に止まり、利用者は取れるはずのない控えを
+ * 待ち続ける。
+ *
+ * 長めに取るのは、遅い端末の正常な活性化を「そなえ不可」と誤診しないため。
+ * sw 側は activate の各段（掃除・制御の引き取り）に上限を置いているので、
+ * 正常に進む端末はここに届く前に決着する。ここはその外側の、最後の網。
+ * 誤診しても、制御が付いた時点で controllerchange が判定を取り消す
+ * （useSonae が failed を戻す）ので、片道の事故にはならない。
+ */
+export const WORKER_ACTIVATE_MS = 20000;
 
 /**
  * install の成否を見届ける。register() は登録できた時点で解決するので、
@@ -197,6 +243,14 @@ export const WORKER_APPEAR_MS = 5000;
  * 初回インストールの失敗を1件も報告できない。installing / waiting / active の
  * 3つで読み、版が1つも無い状態を「控えが取れなかった」として確定させる。
  *
+ * **installed で見るのをやめてもならない**。活きた版がまだ無い端末では、
+ * install を終えた版が activate まで進んで初めて制御が付く（＝札が動く）。
+ * その前に版が畳まれること（別のタブが解除した・新しい版に追い越された）も、
+ * 活性化そのものが返らないこともあり、どちらでも controllerchange は来ない。
+ * そこで観測を外していると誰も気づけず、札は「そなえ中」で止まる。活きた版が
+ * 無い登録では、activated（成功）か redundant（失敗）まで見届け、どちらも
+ * 来なければ期限で畳む。
+ *
  * onSettled(true) は「この端末で控えが取れなかった」と確定したときだけ呼ぶ。
  * 活きている版が別にあるなら、redundant になったのは更新の試行が畳まれた
  * だけで、控え（前の世代）はそのまま使える。
@@ -206,11 +260,16 @@ export function watchSonaeInstall(
   onSettled: (failed: boolean) => void,
   /** 版が現れるのを待つ猶予（ms）。試験から短くするためだけの口。 */
   appearMs: number = WORKER_APPEAR_MS,
+  /** 活性化を待つ猶予（ms）。試験から短くするためだけの口。 */
+  activateMs: number = WORKER_ACTIVATE_MS,
 ): () => void {
   // この観測の周回で結論を出したか。新しい版が現れたら false に戻す
   // （閉じたままにすると、後から入った版の成否が札に出ない）。
   let settled = false;
   let waited = false;
+  // いま活性化を待っている周回か（同じ周回で期限を張り直さない。張り直すと
+  // installed → activating の遷移のたびに上限が伸び、期限が事実上消える）。
+  let awaiting = false;
   let watched: ServiceWorker | null = null;
   let offWorker = (): void => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -222,14 +281,39 @@ export function watchSonaeInstall(
     }
   };
 
+  /**
+   * 畳まれた版は「居ない」と読む。install の失敗では、版が redundant になる
+   * 時点と、登録の枠（installing / waiting / active）が空になる時点が別々に
+   * 届く。素直に読むと「まだ版が居る」ことになり、その版をまた観測してまた
+   * 畳まれたと読む往復が閉じない（結論が出ないまま札が「そなえ中」で止まる。
+   * これは、この関数が防ごうとしている当のもの）。
+   *
+   * 3つの枠すべてに同じ規則を当てる。active だけ素通しにすると、解除された
+   * 直後の登録で畳まれた版を「活きた版が居る」と読み、初回インストールの
+   * 失敗を「更新の試行が畳まれただけ」と誤認して1件も報せられない。
+   */
+  const live = (worker: ServiceWorker | null): ServiceWorker | null =>
+    worker !== null && worker.state !== "redundant" ? worker : null;
+
+  /**
+   * 版の観測を外す。`watched` も落とす（落とさないと、同じ版をもう一度
+   * 観測したい周回で「張り直さない」の判定に弾かれ、観測も期限も無いまま
+   * 結論の出ない周回が残る）。
+   */
+  const detach = (): void => {
+    offWorker();
+    offWorker = (): void => {};
+    watched = null;
+  };
+
   const report = (failed: boolean): void => {
     if (settled) return;
     settled = true;
+    awaiting = false;
     clearTimer();
     // 結論が出た版はもう見ない（見続けても `settled` に弾かれるだけ）。
     // 新しい版が現れたら updatefound が観測をやり直す。
-    offWorker();
-    offWorker = (): void => {};
+    detach();
     onSettled(failed);
   };
 
@@ -241,16 +325,57 @@ export function watchSonaeInstall(
     // 前の版の観測を外す。外さないと、畳まれた古い版が後から結論を出し、
     // 新しい版が正常に install 中でも「そなえ不可」と言い切ってしまう。
     offWorker();
+    // 別の版を見に来た＝前の版の活性化待ちは終わり。期限も持ち越さない
+    // （持ち越すと、正常に install 中の新しい版を古い期限が「不可」にする）。
+    awaiting = false;
+    clearTimer();
     const onState = (): void => {
       if (worker.state === "installing") return;
-      if (worker.state !== "redundant") {
+      if (worker.state === "redundant") {
+        // 畳まれた版。残っている版で読み直す
+        // （他に版があれば、この端末の失敗ではない）。
+        detach();
+        awaiting = false;
+        clearTimer();
+        settle();
+        return;
+      }
+      // 活性化した＝制御を引き取れる版が居る。ここで確定してよい。
+      if (worker.state === "activated") {
         report(false);
         return;
       }
-      // 畳まれた版。残っている版で読み直す（他に版があればこの端末の失敗ではない）。
-      offWorker();
-      offWorker = (): void => {};
-      settle();
+      // installed / activating。制御を握るのは活性の版で、この版ではない。
+      const active = live(reg.active);
+      if (active !== null && active !== worker) {
+        // 活性化まで進んでいるなら控えは使える＝この版の行方は札を左右しない
+        // （この版は更新の試行で、控えは前の世代がそのまま持っている）。
+        if (active.state === "activated") {
+          report(false);
+          return;
+        }
+        // まだ活性化の途中。札を左右するのはそちらなので、見る先を移す
+        // （この版は待機で、活性の版が片付くまで動かない）。
+        watchWorker(active);
+        return;
+      }
+      // 活きた版がまだ無い＝初回インストール。ここで「失敗ではない」と閉じては
+      // ならない。制御が付くのは活性化してからで、その前に畳まれることも、
+      // 活性化が返らないこともある。観測を外した後ではどちらにも気づけず、
+      // controllerchange も来ないまま札が「そなえ中」で止まる。
+      // 決着（activated / redundant）まで見届け、来なければ期限で畳む。
+      if (awaiting) return;
+      awaiting = true;
+      clearTimer();
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (settled) return;
+        // 期限。札は「取れない」に倒すが、**観測は外さない**。ここで外すと、
+        // 遅れて活性化した版を誰も見なくなり、控えが実在するのに札が
+        // 「そなえ不可（要電波）」で固まる（controllerchange が来なければ
+        // 戻す機会も無い）。周回は開けたままにして、決着で言い直す。
+        onSettled(true);
+      }, activateMs);
     };
     worker.addEventListener("statechange", onState);
     offWorker = (): void => worker.removeEventListener("statechange", onState);
@@ -266,22 +391,40 @@ export function watchSonaeInstall(
     // 素直に読むと「install 中の版が居る」ことになり、その版をまた観測して
     // また畳まれたと読む往復が閉じない（結論が出ないまま札が「そなえ中」で
     // 止まる。これは、この関数が防ごうとしている当のもの）。
-    const current = reg.installing;
-    const installing =
-      current !== null && current.state !== "redundant" ? current : null;
+    const installing = live(reg.installing);
+    const waiting = live(reg.waiting);
+    const active = live(reg.active);
     switch (
       readSonaeWorkers({
         installing: installing !== null,
-        waiting: reg.waiting !== null,
-        active: reg.active !== null,
+        waiting: waiting !== null,
+        active: active !== null,
       })
     ) {
       case "matsu":
+        // install 中の版に期限は置かない。取得は会場の回線に律速され、
+        // sw 側も「進んでいる限り待つ（無音で畳む）」で組んである。総時間で
+        // 切ると、遅いだけで繋がる回線を「控えが取れない端末」に落とす。
+        // 記憶域側の沈黙は sw が畳むので、ここに残るのは通信の遅さだけで、
+        // そのあいだ「そなえ中（開いたまま）」は嘘ではない。
         if (installing !== null) watchWorker(installing);
         return;
-      case "ari":
-        report(false);
+      case "ari": {
+        // 制御を引き取れるのは活性化まで進んだ版だけ。それが居るなら、
+        // この端末は控えを使える（失敗ではない）。
+        if (active !== null && active.state === "activated") {
+          report(false);
+          return;
+        }
+        // まだ活性化していない版（待機中・活性化中）しか居ない。register() の
+        // 解決がここまで遅れると install 中の版を観測できないので、その版を
+        // 拾って決着まで見届ける。ここで閉じると、活性化まで進まない版に
+        // 誰も気づけず、controllerchange も来ないまま札が「そなえ中」で止まる。
+        // "ari" は待機中か活性の版が居ることなので、どちらかは必ず居る。
+        const pending = active ?? waiting;
+        if (pending !== null) watchWorker(pending);
         return;
+      }
       case "nashi":
         if (waited) {
           report(true);
@@ -300,6 +443,11 @@ export function watchSonaeInstall(
     clearTimer();
     settled = false;
     waited = false;
+    awaiting = false;
+    // 前の周回の観測を持ち込まない。持ち込むと、次の周回が版を1つも
+    // 見つけられなかったとき（枠が空になった直後）に古い版の観測だけが
+    // 生き残り、その版の遷移が新しい周回の結論を横取りする。
+    detach();
     settle();
   };
   reg.addEventListener("updatefound", onUpdateFound);
@@ -307,8 +455,8 @@ export function watchSonaeInstall(
 
   return (): void => {
     clearTimer();
-    offWorker();
-    offWorker = (): void => {};
+    awaiting = false;
+    detach();
     reg.removeEventListener("updatefound", onUpdateFound);
   };
 }

@@ -26,6 +26,10 @@ import {
 } from "../lib/offline.ts";
 
 const SW_SRC = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
+const KILL_SRC = readFileSync(
+  new URL("../scripts/sw-kill.js", import.meta.url),
+  "utf8",
+);
 
 /**
  * いま配っているのが「取り消し版（kill switch）」か。
@@ -40,6 +44,13 @@ const SW_IS_KILL = !SW_SRC.includes("REQUIRED_TIMEOUT_MS");
 const skipOnKill = SW_IS_KILL
   ? { skip: "取り消し版を配っている間は控えの検査を飛ばす" }
   : {};
+
+/**
+ * 「返らない相手」を試す検査に付ける。期限が消えた版では待ち続けることに
+ * なるので、上限を置いて**落とす**（黙って止まると CI ごと固まり、
+ * 期限を失ったことが誰にも見えない）。
+ */
+const stalls = { ...skipOnKill, timeout: 5000 };
 
 /**
  * 注釈を落としてコードだけを見る（keepStrings=false で文字列の中身も落とす）。
@@ -449,24 +460,45 @@ test("sw.js: install の後は世代キャッシュに一切書かない（別�
   ].map((m) => m[1]);
   assert.ok(writes.length > 0, "書き込み経路を見つけられていない（検査が空振り）");
   for (const target of writes) {
-    assert.equal(target, "runtime", `install の後で ${target} に書いている`);
+    // 書き先は別置き（runtime）そのものか、そこから導いた writable だけ。
+    assert.ok(
+      target === "runtime" || target === "writable",
+      `install の後で ${target} に書いている`,
+    );
   }
+  // writable は別置きから導く（世代を指す変数を代入できないようにする）。
+  assert.match(
+    codeOnly(SW_SRC),
+    /const writable = [^;]*\bruntime\b[^;]*;/,
+    "書き先が別置き以外から導かれている",
+  );
   assert.ok(
     !afterInstall.includes("cache.put("),
     "install の後で世代のキャッシュに直接書いている",
   );
   // 別置きは世代と別名で、掃除のときに巻き添えで消さない
   assert.ok(SW_SRC.includes("const RUNTIME ="), "別置きの宣言が無い");
-  // 同じ条件は install の掃除にも出てくる。ファイル全体を見ると、
-  // activate 側だけ壊れても気づけない。activate の中だけを見る。
+  // 掃除は install と activate が同じ関数（sweepStale）を呼ぶ。残す集合を
+  // その1か所で検査し、activate がその関数を通っていることも確かめる
+  // （直に caches.delete を並べ直すと、規則が二重になって片方だけ腐る）。
+  const sweep = codeOnly(SW_SRC).slice(
+    codeOnly(SW_SRC).indexOf("async function sweepStale()"),
+    codeOnly(SW_SRC).indexOf("function scoped("),
+  );
+  assert.ok(sweep.length > 0, "掃除を切り出せない（検査が空振り）");
+  assert.ok(
+    sweep.includes("n !== CACHE && n !== RUNTIME"),
+    "掃除が現世代か別置きまで消している",
+  );
   const activate = codeOnly(SW_SRC).slice(
     codeOnly(SW_SRC).indexOf('self.addEventListener("activate"'),
     codeOnly(SW_SRC).indexOf("function offlineNotice"),
   );
   assert.ok(activate.length > 0, "activate を切り出せない（検査が空振り）");
+  assert.ok(activate.includes("sweepStale()"), "activate が掃除を通っていない");
   assert.ok(
-    activate.includes("n !== CACHE && n !== RUNTIME"),
-    "掃除が現世代か別置きまで消している",
+    !activate.includes("caches.delete("),
+    "activate が掃除の規則を書き直している（二重管理）",
   );
 });
 
@@ -605,6 +637,17 @@ function loadWorker({
   existing = {},
   /** true にすると Cache Storage が読めない端末を模す。 */
   storageFails = false,
+  /**
+   * 一部の操作だけを壊す端末を模す。
+   * "keys" | "delete" | "open" | "match"（世代）| "match-rt"（別置き）
+   */
+  storageBroken = [],
+  /** 一部の操作だけが返らない端末を模す（値は storageBroken と同じ）。 */
+  storageSilent = [],
+  /** 登録の解除が返らない端末を模す。 */
+  unregisterSilent = false,
+  /** 制御の引き取りが返らない端末を模す。 */
+  claimSilent = false,
   /** false にすると本文を読めない実装（response.body 無し）を模す。 */
   withStreams = true,
 }) {
@@ -623,18 +666,34 @@ function loadWorker({
   src = swap(src, /const REQUIRED_TIMEOUT_MS = [\d_]+;/, `const REQUIRED_TIMEOUT_MS = ${budgetMs};`);
   src = swap(src, /const OPTIONAL_TIMEOUT_MS = [\d_]+;/, `const OPTIONAL_TIMEOUT_MS = ${budgetMs};`);
   src = swap(src, /const RUNTIME_TIMEOUT_MS = [\d_]+;/, `const RUNTIME_TIMEOUT_MS = ${budgetMs};`);
+  src = swap(src, /const STEP_TIMEOUT_MS = [\d_]+;/, `const STEP_TIMEOUT_MS = ${budgetMs};`);
 
   const stores = new Map();
   for (const [name, urls] of Object.entries(existing)) {
-    stores.set(name, new Map(urls.map((u) => [u, `held:${u}`])));
+    // 書き込みと同じ形で置く。文字列のまま置くと、読み返しが本文の無い
+    // 200 になり、控えの中身を見る検査が「空」と比べて通ってしまう。
+    stores.set(
+      name,
+      new Map(
+        urls.map((u) => [
+          u,
+          { body: `held:${u}`, status: 200, statusText: "", headers: [] },
+        ]),
+      ),
+    );
   }
   const fail = () => {
     throw new Error("storage unavailable");
   };
+  /** その操作が壊れている／黙っている端末を演じる。 */
+  const gate = async (op) => {
+    if (storageFails || storageBroken.includes(op)) fail();
+    if (storageSilent.includes(op)) await new Promise(() => {});
+  };
   let jammed = false;
   const caches = {
     async open(name) {
-      if (storageFails) fail();
+      await gate("open");
       if (!stores.has(name)) stores.set(name, new Map());
       const held = stores.get(name);
       // 鍵は URL 文字列。実物は Request でも URL でも受けるので合わせる。
@@ -656,6 +715,8 @@ function loadWorker({
         },
         delete: async (key) => held.delete(asKey(key)),
         match: async (key, options) => {
+          // 世代と別置きを別々に壊す／黙らせる（片方だけ読めない端末を作る）。
+          await gate(name.startsWith("soneki-rt-") ? "match-rt" : "match");
           const url = asKey(key);
           const stored =
             options && options.ignoreSearch
@@ -671,11 +732,11 @@ function loadWorker({
       };
     },
     async keys() {
-      if (storageFails) fail();
+      await gate("keys");
       return [...stores.keys()];
     },
     async delete(name) {
-      if (storageFails) fail();
+      await gate("delete");
       return stores.delete(name);
     },
   };
@@ -689,6 +750,7 @@ function loadWorker({
       active,
       unregister: async () => {
         calls.unregister += 1;
+        if (unregisterSilent) await new Promise(() => {});
         return true;
       },
     },
@@ -699,6 +761,7 @@ function loadWorker({
       matchAll: async () => [],
       claim: async () => {
         calls.claim += 1;
+        if (claimSilent) await new Promise(() => {});
       },
     },
   };
@@ -707,6 +770,7 @@ function loadWorker({
   // silenced のあいだは、応答を一切返さない相手を演じる。
   let silenced = false;
   let cut = false;
+  let waitUntilBroken = false;
   const fetchStub = async (input, init) => {
     if (cut) throw new Error("offline");
     const options = init || {};
@@ -768,7 +832,11 @@ function loadWorker({
       respondWith: (p) => {
         answered = p;
       },
-      waitUntil: (p) => background.push(p),
+      waitUntil: (p) => {
+        background.push(p);
+        // 引き延ばしを受け付けない状態（イベントが既に決着している等）。
+        if (waitUntilBroken) throw new Error("waitUntil unavailable");
+      },
     });
     const res =
       answered === undefined
@@ -794,6 +862,10 @@ function loadWorker({
     /** 以後の取得を必ず失敗させる（圏外）。 */
     offline: () => {
       cut = true;
+    },
+    /** 以後、裏仕事の引き延ばしを受け付けない状態にする。 */
+    breakWaitUntil: () => {
+      waitUntilBroken = true;
     },
   };
 }
@@ -1036,6 +1108,57 @@ test("install: 活きている版が無い端末では、前の失敗が残し�
   assert.deepEqual(GENERATIONS(stores).sort(), ["soneki-testgen"]);
 });
 
+test("install: 掃除が転けても必須分は取りに行く", skipOnKill, async () => {
+  // 掃除は best-effort。ここで投げると、1本も取りに行かないまま install が
+  // 落ちる ＝掃除で救うはずだった端末を、掃除のせいで控え無しに固定する。
+  const { outcome, stores } = await runInstall({
+    required: ["", "tally/"],
+    storageBroken: ["delete"],
+    existing: { "soneki-old": ["https://example.test/app/"] },
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  assert.equal(outcome, null, "掃除の失敗で install ごと落ちている");
+  assert.equal(stores.get("soneki-testgen").size, 2);
+});
+
+test("install: 掃除が黙っても必須分は取りに行く", stalls, async () => {
+  // 失敗だけでなく「返らない」も塞ぐ。期限が無ければ install は開いたままで、
+  // 札は「そなえ中（開いたまま）」から動かず、失敗として畳まれず再試行もない。
+  const { outcome, stores } = await runInstall({
+    required: ["", "tally/"],
+    storageSilent: ["delete"],
+    existing: { "soneki-old": ["https://example.test/app/"] },
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  assert.equal(outcome, null, "掃除の沈黙で install が終わらない");
+  assert.equal(stores.get("soneki-testgen").size, 2);
+});
+
+test("install: 取りこぼしの後始末が黙っても、失敗として畳む", stalls, async () => {
+  // 取りこぼした世代を消す段で止まると install は開いたままになり、版は
+  // redundant にならない ＝札は「そなえ中」で止まり、再試行の機会も来ない。
+  const { outcome } = await runInstall({
+    required: ["", "tally/"],
+    storageSilent: ["delete"],
+    respond: async (url) =>
+      url.endsWith("/tally/") ? new Response("", { status: 503 }) : new Response("ok"),
+  });
+  assert.notEqual(outcome, null, "取りこぼしの後始末で install が開いたままになる");
+  assert.match(String(outcome.message), /precache incomplete/);
+});
+
+test("install: 控えを開けないまま黙る端末では畳む", stalls, async () => {
+  // 開けないなら控えは持てない。開いたまま止まるより、失敗として畳んで
+  // 次の機会に回す方がよい（畳めば札も「そなえ不可」まで動く）。
+  const { outcome } = await runInstall({
+    required: ["", "tally/"],
+    storageSilent: ["open"],
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  assert.notEqual(outcome, null, "記憶域の沈黙で install が開いたままになる");
+  assert.match(String(outcome.message), /stalled/);
+});
+
 test("install: 活きている版があるなら古い世代に触らない（配布中の控えを抜かない）", skipOnKill, async () => {
   const { outcome, stores } = await runInstall({
     required: ["", "tally/"],
@@ -1082,6 +1205,270 @@ test("activate: 現世代と別置きだけ残し、制御を引き取る", skip
     ["other", "soneki-rt-testgen", "soneki-testgen"],
   );
   assert.equal(worker.calls.claim, 1, "制御を引き取っていない");
+});
+
+test("activate: 掃除が転けても制御を引き取る", skipOnKill, async () => {
+  // 掃除は後片付けで、控えを使うのに要らない。直列に await すると、記憶域を
+  // 読めない端末では claim まで届かず、控えは揃っているのにページが制御下に
+  // 入らない。ページ側は controllerchange を待ち続け、札は「そなえ中
+  // （開いたまま）」で永久に止まる ＝取れている控えを取れていないかのように
+  // 見せる。
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    active: { state: "activated" },
+    storageFails: true,
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  assert.equal(
+    await worker.dispatch("activate"),
+    null,
+    "掃除の失敗で activate ごと転けている",
+  );
+  assert.equal(worker.calls.claim, 1, "掃除が転けると制御を引き取っていない");
+});
+
+test("activate: 掃除が黙っても制御を引き取る", stalls, async () => {
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    active: { state: "activated" },
+    storageSilent: ["keys"],
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  assert.equal(
+    await worker.dispatch("activate"),
+    null,
+    "掃除の沈黙で activate が終わらない",
+  );
+  assert.equal(worker.calls.claim, 1, "掃除の沈黙で制御を引き取っていない");
+});
+
+test("activate: 掃除の沈黙で制御が止まらない（期限を置く）", skipOnKill, () => {
+  // 失敗だけでなく「返らない」も塞ぐ。記憶域が沈黙する端末では、期限が
+  // 無ければ waitUntil が開いたままになり、claim は永久に来ない。
+  const body = codeOnly(SW_SRC);
+  const activate = body.slice(
+    body.indexOf('self.addEventListener("activate"'),
+    body.indexOf("function offlineNotice"),
+  );
+  assert.ok(activate.length > 0, "activate を切り出せない（検査が空振り）");
+  assert.ok(
+    activate.includes("atMost(sweepStale(), STEP_TIMEOUT_MS)"),
+    "掃除に期限が無い（沈黙した記憶域で worker が生き続ける）",
+  );
+  assert.ok(
+    activate.includes(
+      "atMost((async () => self.clients.claim())(), STEP_TIMEOUT_MS)",
+    ),
+    "claim に期限が無い（沈黙すると waitUntil が開いたままになる）",
+  );
+  // 掃除の失敗は**作った時点**で受け止める。後から括ると、待ちを跨いだ失敗が
+  // 誰にも受け取られないまま unhandledrejection として worker の外に出る。
+  assert.ok(
+    activate.indexOf("atMost(sweepStale()") < activate.indexOf("claim()"),
+    "掃除の期限を、掃除を始めた後から括っている",
+  );
+  assert.ok(
+    activate.indexOf("claim()") < activate.indexOf("await swept"),
+    "掃除の決着を待ってから制御を引き取っている（繰り上げが遅れる）",
+  );
+});
+
+/** その名前の控えに入っている枚数（キャッシュの有無ではなく中身で見る）。 */
+function held(stores, name) {
+  const store = stores.get(name);
+  return store === undefined ? 0 : store.size;
+}
+
+/**
+ * 取り消し版（kill switch）を動かす最小の入れ物。回復手段は「壊れた端末でも
+ * 効く」ことに意味があるので、文字列の検査ではなく実際に動かして確かめる。
+ */
+function loadKillWorker({
+  existing = {},
+  storageBroken = [],
+  storageSilent = [],
+  unregisterSilent = false,
+  windows = [],
+  stepMs = 60,
+} = {}) {
+  const src = KILL_SRC.replace(
+    /const STEP_TIMEOUT_MS = [\d_]+;/,
+    `const STEP_TIMEOUT_MS = ${stepMs};`,
+  );
+  assert.notEqual(src, KILL_SRC, "焼き込みが空振り: STEP_TIMEOUT_MS");
+  const stores = new Map(Object.keys(existing).map((n) => [n, existing[n]]));
+  const gate = async (op) => {
+    if (storageBroken.includes(op)) throw new Error("storage unavailable");
+    if (storageSilent.includes(op)) await new Promise(() => {});
+  };
+  const calls = { skipWaiting: 0, unregister: 0, navigated: [] };
+  const handlers = new Map();
+  const self = {
+    addEventListener: (type, fn) => handlers.set(type, fn),
+    skipWaiting: async () => {
+      calls.skipWaiting += 1;
+    },
+    registration: {
+      unregister: async () => {
+        calls.unregister += 1;
+        if (unregisterSilent) await new Promise(() => {});
+        return true;
+      },
+    },
+    clients: {
+      matchAll: async () => windows,
+    },
+  };
+  const caches = {
+    async keys() {
+      await gate("keys");
+      return [...stores.keys()];
+    },
+    async delete(name) {
+      await gate("delete");
+      return stores.delete(name);
+    },
+  };
+  runInNewContext(src, { self, caches, setTimeout, clearTimeout, calls });
+  const dispatch = async (type) => {
+    let waited = Promise.resolve();
+    handlers.get(type)({
+      waitUntil: (p) => {
+        waited = p;
+      },
+    });
+    return waited.then(
+      () => null,
+      (e) => e,
+    );
+  };
+  return { dispatch, calls, stores };
+}
+
+/** 開き直しの相手。`navigate` の壊れ方を差し替えられるようにする。 */
+function fakeWindow(url, { navigate } = {}) {
+  return {
+    url,
+    navigate:
+      navigate ||
+      (async () => {
+        /* 開き直せた */
+      }),
+  };
+}
+
+test("sw-kill: 控えを消し、登録を解き、開いているタブを開き直す", stalls, async () => {
+  const seen = [];
+  const worker = loadKillWorker({
+    existing: { "soneki-a": 1, "soneki-rt-a": 1, other: 1 },
+    windows: [
+      fakeWindow("https://x/app/", {
+        navigate: async (u) => {
+          seen.push(u);
+        },
+      }),
+    ],
+  });
+  assert.equal(await worker.dispatch("install"), null);
+  assert.equal(worker.calls.skipWaiting, 1, "繰り上げていない");
+  assert.equal(await worker.dispatch("activate"), null);
+  assert.deepEqual([...worker.stores.keys()], ["other"], "自分の世代だけ消していない");
+  assert.equal(worker.calls.unregister, 1, "登録を解いていない");
+  assert.deepEqual(seen, ["https://x/app/"], "開き直させていない");
+});
+
+test("sw-kill: 記憶域が壊れていても・返らなくても撤去を進める", stalls, async () => {
+  for (const broken of [{ storageBroken: ["keys"] }, { storageSilent: ["delete"] }]) {
+    const seen = [];
+    const worker = loadKillWorker({
+      ...broken,
+      existing: { "soneki-a": 1 },
+      windows: [
+        fakeWindow("https://x/app/", {
+          navigate: async (u) => {
+            seen.push(u);
+          },
+        }),
+      ],
+    });
+    assert.equal(await worker.dispatch("activate"), null);
+    assert.equal(worker.calls.unregister, 1, "控えの都合で登録を解けていない");
+    assert.deepEqual(seen, ["https://x/app/"], "控えの都合で開き直せていない");
+  }
+});
+
+test("sw-kill: 解除が返らなくても開き直しまで進む", stalls, async () => {
+  const seen = [];
+  const worker = loadKillWorker({
+    unregisterSilent: true,
+    windows: [
+      fakeWindow("https://x/app/", {
+        navigate: async (u) => {
+          seen.push(u);
+        },
+      }),
+    ],
+  });
+  assert.equal(await worker.dispatch("activate"), null);
+  assert.deepEqual(seen, ["https://x/app/"], "解除の沈黙で開き直しが止まっている");
+});
+
+test("sw-kill: 1つのタブが返らない・投げても、残りのタブを開き直す", stalls, async () => {
+  for (const broken of [
+    () => new Promise(() => {}),
+    () => {
+      throw new Error("navigate unavailable");
+    },
+  ]) {
+    const seen = [];
+    const worker = loadKillWorker({
+      windows: [
+        fakeWindow("https://x/app/stuck", { navigate: broken }),
+        fakeWindow("https://x/app/tally/", {
+          navigate: async (u) => {
+            seen.push(u);
+          },
+        }),
+      ],
+    });
+    assert.equal(await worker.dispatch("activate"), null);
+    assert.deepEqual(
+      seen,
+      ["https://x/app/tally/"],
+      "1つのタブの都合で残りが取り残されている",
+    );
+  }
+});
+
+test("sw-kill.js: 控えを消せない端末でも登録を解除する", () => {
+  // 回復手段は「壊れていても効く」ことに意味がある。破棄をそのまま await
+  // すると、記憶域が読めない／返らない端末では解除も開き直しも起きず、
+  // まさに回復が要る場面で静かに効かない。
+  const kill = readFileSync(new URL("../scripts/sw-kill.js", import.meta.url), "utf8");
+  const body = codeOnly(kill);
+  const drop = body.indexOf("caches.keys()");
+  const off = body.indexOf("self.registration.unregister()");
+  assert.ok(drop > 0 && off > drop, "撤去の手順を見つけられない（検査が空振り）");
+  // 破棄は解除より前に**上限付きで**畳まれていること。try/catch だけでは
+  // 「返らない」を塞げず、`.catch()` を数えると同じ待ちに戻した版も通る。
+  assert.match(
+    body.slice(drop, off),
+    /atMost\(\s*purge/,
+    "控えの破棄の失敗・沈黙が、登録の解除を止める形になっている",
+  );
+  // 解除と開き直しにも同じ上限を置く（撤去の3手すべてが「返らない」に耐える）。
+  assert.match(
+    body,
+    /atMost\(\s*self\.registration\.unregister\(\)/,
+    "登録の解除に上限が無い（返らない端末で worker が生き続ける）",
+  );
+  assert.match(body, /atMost\(\s*reopen/, "開き直しに上限が無い");
+  // 開き直しは1つずつ待たない（返らないタブが残りのタブを取り残す）。
+  assert.ok(
+    !/for \(const client of clients\)/.test(body),
+    "開き直しを1つずつ待っている",
+  );
+  assert.match(body, /Promise\.all\(\s*clients\.map/, "開き直しを並べていない");
 });
 
 test("取り出し: 控えの遷移は共有リンクのクエリ付きでも当たる", skipOnKill, async () => {
@@ -1274,6 +1661,142 @@ test("逃げ道: ?nosw で登録を解き、控えを捨て、以後は横取り
     "離脱後も横取りしている",
   );
   assert.deepEqual(GENERATIONS(worker.stores), []);
+});
+
+test("逃げ道: 控えを消せない端末でも登録を解く", skipOnKill, async () => {
+  // 逃げ道は壊れた端末でこそ効く必要がある。控えの破棄と登録の解除を1つの
+  // try で括ると、記憶域を読めない端末では破棄で投げた時点で解除まで届かず、
+  // この版が制御を持ったまま残る（optedOut は worker が畳まれるまでの札で、
+  // 次の起動ではまた横取りが始まる）。
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    storageBroken: ["keys"],
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  await worker.request("https://example.test/app/tally/?nosw", {
+    mode: "navigate",
+  });
+  assert.equal(worker.calls.unregister, 1, "控えを消せないと登録も解けていない");
+});
+
+test("取り出し: 控えが返らない端末でも応答を返す（Service Worker 無しより悪くしない）", stalls, async () => {
+  // 控えを読む段で止まると respondWith が永久に解決せず、回線が完全でも
+  // 画面が出ない。読めなければ控えを諦めて素通りする方が必ず軽い。
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    storageSilent: ["open"],
+    respond: async () => new Response("<html>net</html>"),
+  });
+  const page = await worker.request("https://example.test/app/tally/", {
+    mode: "navigate",
+  });
+  assert.ok(page, "控えの沈黙で応答が返らない");
+  assert.equal(await page.text(), "<html>net</html>");
+
+  const asset = await worker.request("https://example.test/app/_next/x.js");
+  assert.ok(asset && asset.ok, "資産の経路でも応答が返らない");
+  assert.equal(await asset.text(), "<html>net</html>");
+});
+
+test("取り出し: 世代を確かめられない回は、別置きに書かない（版ズレを作らない）", stalls, async () => {
+  // 世代の照合が返らない／転ぶ端末で「控えに無い」と読むと、世代に入っている
+  // URL にネットワークの応答を別置きへ貼り付け、次からそれを返す。会場の
+  // 捕捉ページが 200 を返す回線では、JS の URL に HTML が入る（画面は出るのに
+  // 操作が効かない＝当日いちばん困る壊れ方）。
+  for (const gate of ["storageSilent", "storageBroken"]) {
+    const worker = loadWorker({
+      required: ["", "tally/"],
+      [gate]: ["match"],
+      respond: async () => new Response("<html>portal</html>"),
+    });
+    const res = await worker.request("https://example.test/app/_next/x.js");
+    assert.ok(res, `${gate}: 応答が返らない`);
+    assert.equal(await res.text(), "<html>portal</html>", `${gate}: 素通ししていない`);
+    assert.equal(
+      held(worker.stores, "soneki-rt-testgen"),
+      0,
+      `${gate}: 世代を確かめられないのに別置きへ書いている`,
+    );
+  }
+});
+
+test("取り出し: 裏の更新を引き延ばせなくても、控えを返す", skipOnKill, async () => {
+  // ここで投げると外側の受けが取り直しに行き、控えがあるのに回線の応答
+  // （会場の捕捉ページ）を返すことになる。
+  let body = "v1";
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    respond: async () => new Response(body),
+  });
+  const first = await worker.request("https://example.test/app/x.js");
+  assert.equal(await first.text(), "v1");
+
+  body = "v2";
+  worker.breakWaitUntil();
+  const second = await worker.request("https://example.test/app/x.js");
+  assert.equal(await second.text(), "v1", "引き延ばせないと控えを捨てている");
+});
+
+test("取り出し: 別置きを確かめられない回も、そこへ書かない", stalls, async () => {
+  // 何が入っているか分からないまま上書きすると、次の取り出しでそれを返す。
+  // 会場の捕捉ページが 200 を返す回線では、JS の URL に HTML が入る。
+  for (const gate of ["storageSilent", "storageBroken"]) {
+    const worker = loadWorker({
+      required: ["", "tally/"],
+      [gate]: ["match-rt"],
+      respond: async () => new Response("<html>portal</html>"),
+    });
+    const res = await worker.request("https://example.test/app/_next/x.js");
+    assert.ok(res, `${gate}: 応答が返らない`);
+    assert.equal(await res.text(), "<html>portal</html>", `${gate}: 素通ししていない`);
+    assert.equal(
+      held(worker.stores, "soneki-rt-testgen"),
+      0,
+      `${gate}: 読めない別置きへ書いている`,
+    );
+  }
+});
+
+test("活性化: 制御の引き取りが返らなくても activate を畳む", stalls, async () => {
+  // 引き取りが返らないと waitUntil が開いたままになり、worker が生かされ続ける
+  // （会場では端末の電池が要る）。
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    active: { state: "activated" },
+    claimSilent: true,
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  assert.equal(
+    await worker.dispatch("activate"),
+    null,
+    "引き取りの沈黙で activate が終わらない",
+  );
+});
+
+test("逃げ道: 登録の解除が返らなくても撤去を畳む", stalls, async () => {
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    unregisterSilent: true,
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  await worker.request("https://example.test/app/tally/?nosw", {
+    mode: "navigate",
+  });
+  assert.equal(worker.calls.unregister, 1, "解除を試していない");
+});
+
+test("逃げ道: 控えの破棄が返らない端末でも登録を解く", stalls, async () => {
+  // 失敗だけでなく「返らない」も塞ぐ。破棄で止まると解除まで届かず、
+  // この版が制御を持ったまま残る（次の起動でまた横取りが始まる）。
+  const worker = loadWorker({
+    required: ["", "tally/"],
+    storageSilent: ["keys"],
+    respond: async (url) => new Response(`body:${url}`),
+  });
+  await worker.request("https://example.test/app/tally/?nosw", {
+    mode: "navigate",
+  });
+  assert.equal(worker.calls.unregister, 1, "破棄の沈黙で登録が解けていない");
 });
 
 test("fetchInto: 非OK の応答も本文を閉じる（読まれない流れを溜めない）", skipOnKill, async () => {
@@ -1517,10 +2040,10 @@ test("atMost: 裏仕事の引き延ばしを打ち切る（仕事そのものは
       resolve("done");
     }, 400),
   );
-  const started = Date.now();
+  // 「打ち切った」の証拠は経過時間ではなく、仕事より先に返ったこと。
+  // 壁時計で見ると、負荷の高い機械で意味なく落ちる。
   await atMost(work, 30);
-  assert.ok(Date.now() - started < 300, "引き延ばしを打ち切っていない");
-  assert.equal(finished, false, "仕事の方を止めてしまっている");
+  assert.equal(finished, false, "引き延ばしを打ち切っていない");
   // 早く終わる仕事は待つ（打ち切りが常に先に来てはならない）
   assert.equal(await atMost(Promise.resolve("x"), 400), undefined);
   await work;
@@ -1720,6 +2243,61 @@ test("removeSonae: 解除するのは自分の scope の登録だけ", () => {
   );
 });
 
+test("useSonae: 画面に戻ったら控えを測り直す（消えた控えを名乗り続けない）", () => {
+  // 控えは別のタブ（?nosw）や記憶域の追い出しで消える。消えたことは
+  // どのイベントでも届かないので、測り直さない限り札は「そなえ済」のまま。
+  const src = readFileSync(
+    new URL("../app/tally/useSonae.ts", import.meta.url),
+    "utf8",
+  );
+  const onVisible = src.slice(
+    src.indexOf("const onVisible"),
+    src.indexOf('document.addEventListener("visibilitychange"'),
+  );
+  assert.ok(onVisible.length > 0, "測り直しを見つけられない（検査が空振り）");
+  assert.match(onVisible, /visibilityState === "visible"/, "見えた側で測っていない");
+  assert.match(onVisible, /sync\(\)/, "測り直していない（観測だけ張っている）");
+  assert.ok(
+    src.includes('document.removeEventListener("visibilitychange", onVisible)'),
+    "測り直しの観測を外していない（画面を離れても残る）",
+  );
+  // 閉じた知らせは、測り直しても出し直さない（記憶域を止めた端末では
+  // 既読の印を書けず、タブを行き来するたびカウンターを覆う）。
+  assert.match(
+    src,
+    /!dismissed\.current/,
+    "閉じた知らせが測り直しのたびに出直す",
+  );
+  assert.match(src, /dismissed\.current = true/, "閉じたことを覚えていない");
+  // 控えが消えた回は知らせも下げる（実体の無い約束を画面に残さない）。
+  assert.match(
+    src,
+    /if \(next !== "ari"\) setShowObi\(false\);/,
+    "控えが消えても知らせを出したままにしている",
+  );
+});
+
+test("useSonae: Cache Storage が無い環境でも状態の確定が投げない", () => {
+  // 素で `caches` を触ると sync ごと投げ、札は最初の「そなえ中」のまま
+  // 二度と動かない（controllerchange も来ないので回復もしない）。
+  const src = readFileSync(
+    new URL("../app/tally/useSonae.ts", import.meta.url),
+    "utf8",
+  );
+  const sync = src.slice(
+    src.indexOf("const sync = async"),
+    src.indexOf("let unwatch"),
+  );
+  assert.ok(sync.length > 0, "sync を見つけられていない（検査が空振り）");
+  // 「有無を確かめている」だけでは足りない。裏返した版（無いときだけ実測し、
+  // 有る端末では常に控え無しと言う）も同じ文字列を含むので、対応まで見る。
+  assert.match(
+    sync,
+    /typeof caches === "undefined"\s*\?\s*false\s*:\s*await hasSonaeGeneration\(/,
+    "Cache Storage が無い側と有る側の扱いが逆・または素で触っている",
+  );
+});
+
 test("stamp-sw.mjs: 世代名に Service Worker 自身を含める", () => {
   // 含めないと、sw.js だけを直した配信で世代名が据え置かれ、install 中の版が
   // 現に動いている版の控えを開く。put が1つ失敗すれば caches.delete(CACHE) で、
@@ -1773,6 +2351,9 @@ class FakeReg extends EventTarget {
 }
 
 const APPEAR = 20;
+// 活性化を待つ猶予。期限そのものを試す検査は、この値ではなく短い値を
+// 引数で渡す（この値は「決着が先に来る」検査が期限に当たらないための余白）。
+const ACTIVATE = 400;
 const settleGap = () => new Promise((r) => setTimeout(r, APPEAR * 3));
 
 test("watchSonaeInstall: 初回インストールの失敗を見届ける（そなえ中で止めない）", async () => {
@@ -1782,7 +2363,7 @@ test("watchSonaeInstall: 初回インストールの失敗を見届ける（そ�
   const worker = new FakeWorker();
   const reg = new FakeReg({ installing: worker });
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   assert.deepEqual(verdicts, [], "install 中に結論を出している");
 
   reg.installing = null;
@@ -1799,7 +2380,7 @@ test("watchSonaeInstall: 畳まれた版がまだ登録に載っていても結�
   const worker = new FakeWorker();
   const reg = new FakeReg({ installing: worker });
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   worker.to("redundant"); // reg.installing はまだこの版を指したまま
   await settleGap();
   assert.deepEqual(verdicts, [true]);
@@ -1811,7 +2392,7 @@ test("watchSonaeInstall: 観測を張る時点で既に畳まれていても結�
   const worker = new FakeWorker("redundant");
   const reg = new FakeReg({ installing: worker });
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   await settleGap();
   assert.deepEqual(verdicts, [true]);
 });
@@ -1821,7 +2402,7 @@ test("watchSonaeInstall: 活きている版があるなら失敗と言わない"
   const worker = new FakeWorker();
   const reg = new FakeReg({ installing: worker, active: new FakeWorker("activated") });
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   reg.installing = null;
   worker.to("redundant");
   await settleGap();
@@ -1834,7 +2415,7 @@ test("watchSonaeInstall: 観測を張る前に決着していた失敗も拾う"
   // 「null＝順調」と読むと、初回インストールの失敗を1件も報せられない。
   const reg = new FakeReg();
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   await settleGap();
   assert.deepEqual(verdicts, [true]);
 });
@@ -1844,27 +2425,248 @@ test("watchSonaeInstall: 版が載る前の一瞬を失敗と決めつけない"
   // 即断すると、正常な初回訪問を「そなえ不可」にしてしまう。
   const reg = new FakeReg();
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   const worker = new FakeWorker();
   reg.found(worker);
   assert.deepEqual(verdicts, [], "版が現れたのに失敗と決めている");
   worker.to("installed");
+  worker.to("activated");
   await settleGap();
   assert.deepEqual(verdicts, [false]);
 });
 
-test("watchSonaeInstall: 待機中の版が居れば即座に「失敗ではない」", async () => {
-  const reg = new FakeReg({ waiting: new FakeWorker("installed") });
+test("watchSonaeInstall: 活きた版があるなら待機中の版で即座に「失敗ではない」", async () => {
+  // 更新の試行。控え（前の世代）は活きた版が持っているので、この版の行方は
+  // 札を左右しない（待機のまま何日も置かれても「そなえ済」のままでよい）。
+  const reg = new FakeReg({
+    waiting: new FakeWorker("installed"),
+    active: new FakeWorker("activated"),
+  });
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   assert.deepEqual(verdicts, [false]);
+});
+
+test("watchSonaeInstall: 初回インストールは activate まで見届ける", async () => {
+  // 制御が付くのは活性化してから。installed で「失敗ではない」と閉じて観測を
+  // 外すと、その前に畳まれても（別のタブが解除した・新しい版に追い越された）
+  // 誰も気づけない。controllerchange も来ないので、札は
+  // 「そなえ中（開いたまま）」で永久に止まる。
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
+
+  worker.to("installed");
+  reg.installing = null;
+  reg.waiting = worker;
+  assert.deepEqual(verdicts, [], "installed で結論を出している");
+
+  reg.waiting = null;
+  reg.active = worker;
+  worker.to("activated");
+  await settleGap();
+  assert.deepEqual(verdicts, [false]);
+  assert.equal(worker.watchers, 0, "決着した版の観測を外していない");
+});
+
+test("watchSonaeInstall: install を終えた版が畳まれたら報せる", async () => {
+  // 活性化の前に畳まれる（別のタブが解除した・新しい版に追い越された）ことが
+  // ある。ここを見ていないと controllerchange も来ないまま、札は
+  // 「開いたまま待て」と言い続ける（待っても変わらない）。
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
+
+  worker.to("installed");
+  reg.installing = null;
+  reg.waiting = worker;
+  assert.deepEqual(verdicts, []);
+
+  reg.waiting = null;
+  worker.to("redundant");
+  await settleGap();
+  assert.deepEqual(verdicts, [true], "活性化の前に畳まれた版を見落としている");
+  assert.equal(worker.watchers, 0, "畳まれた版の観測を外していない");
+});
+
+test("watchSonaeInstall: 張った時点で待機中の版だけでも活性化を見届ける", async () => {
+  // register() の解決が install の完了より遅いと、観測を張る時点で
+  // installing は既に null・waiting だけが居る。活きた版が無いこの登録で
+  // 「有り」と読んで閉じると、活性化まで進まない版を誰も見なくなる。
+  const worker = new FakeWorker("installed");
+  const reg = new FakeReg({ waiting: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
+  assert.deepEqual(verdicts, [], "待機中の版で即断している");
+
+  reg.waiting = null;
+  worker.to("redundant");
+  await settleGap();
+  assert.deepEqual(verdicts, [true]);
+});
+
+test("watchSonaeInstall: 活性化が来なければ期限で畳む", async () => {
+  // activate が返らない端末（記憶域が沈黙する等）では、版は activating の
+  // まま止まり、制御も controllerchange も来ない。上限が無いと札は
+  // 「そなえ中（開いたまま）」で永久に止まり、利用者は取れない控えを待ち続ける。
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, APPEAR);
+  worker.to("installed");
+  reg.installing = null;
+  reg.waiting = worker;
+  assert.deepEqual(verdicts, [], "installed で即断している");
+  // 活性化へ進み、そこで返らなくなる（枠は waiting から active へ移る）。
+  reg.waiting = null;
+  reg.active = worker;
+  worker.to("activating");
+  await settleGap();
+  assert.deepEqual(verdicts, [true], "活性化を無期限に待っている");
+});
+
+test("watchSonaeInstall: 更新の版は installed で即座に「失敗ではない」", async () => {
+  // 活きた版が別にある＝控え（前の世代）は持っている。待機のまま置かれても
+  // 札は「そなえ済」のままでよく、活性化の期限に掛けてはならない。
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker, active: new FakeWorker("activated") });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, APPEAR);
+  worker.to("installed");
+  assert.deepEqual(verdicts, [false], "更新の版を初回インストールと読んでいる");
+  await settleGap();
+  assert.deepEqual(verdicts, [false], "期限で言い直している");
+});
+
+test("watchSonaeInstall: 活性化の途中の版で「失敗ではない」と閉じない", async () => {
+  // 制御を引き取れるのは活性化まで進んだ版だけ。activating を「活きた版」と
+  // 読んで閉じると、活性化が返らない端末で観測も期限も無くなり、札が
+  // 「そなえ中（開いたまま）」から二度と動かない。
+  const worker = new FakeWorker("activating");
+  const reg = new FakeReg({ active: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
+  assert.deepEqual(verdicts, [], "活性化の途中で結論を出している");
+
+  worker.to("activated");
+  assert.deepEqual(verdicts, [false]);
+});
+
+test("watchSonaeInstall: 活性化の途中の版が居るなら、待機の版で閉じない", async () => {
+  // 制御を握るのは活性の版。まだ活性化の途中なら、待機の版を「更新の試行」と
+  // 読んで閉じてはならない（閉じると、活性化まで進まない版に誰も気づけない）。
+  const active = new FakeWorker("activating");
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker, active });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
+  worker.to("installed");
+  assert.deepEqual(verdicts, [], "活性化の途中の版を「活きた版」と読んでいる");
+
+  // 見る先は活性の版に移っている。そちらが決着すれば札も決まる。
+  active.to("activated");
+  assert.deepEqual(verdicts, [false]);
+});
+
+test("watchSonaeInstall: 活性化が返らない版は期限で畳む（張った時点が活性化中でも）", async () => {
+  const worker = new FakeWorker("activating");
+  const reg = new FakeReg({ active: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, APPEAR);
+  await settleGap();
+  assert.deepEqual(verdicts, [true], "活性化を無期限に待っている");
+});
+
+test("watchSonaeInstall: 解除で畳まれた活性版を「居る」と読まない", async () => {
+  // 別のタブが `?nosw` で解除すると、版が redundant になる時点と登録の枠が
+  // 空になる時点が別々に届く。畳まれた版を「活きた版が居る」と読むと、
+  // 初回インストールの失敗を「更新の試行が畳まれただけ」と誤認する。
+  const dead = new FakeWorker("redundant");
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker, active: dead });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
+  worker.to("installed");
+  assert.deepEqual(verdicts, [], "畳まれた版を活きた版と読んでいる");
+
+  reg.installing = null;
+  worker.to("redundant");
+  await settleGap();
+  assert.deepEqual(verdicts, [true]);
+});
+
+test("watchSonaeInstall: 畳まれた版が待機の枠に残っていても結論を出す", async () => {
+  // installing 側と同じ規則を waiting にも当てる。当てないと、畳まれた版を
+  // 観測しては畳まれたと読む往復が閉じず、結論が出ないまま札が止まる。
+  const worker = new FakeWorker("redundant");
+  const reg = new FakeReg({ waiting: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
+  await settleGap();
+  assert.deepEqual(verdicts, [true]);
+});
+
+test("watchSonaeInstall: 期限のあとで活性化したら言い直す", async () => {
+  // 期限で観測を外すと、遅れて活性化した版を誰も見なくなり、控えが実在する
+  // のに札が「そなえ不可（要電波）」で固まる。周回は開けたままにする。
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, APPEAR);
+  worker.to("installed");
+  reg.installing = null;
+  reg.waiting = worker;
+  await settleGap();
+  assert.deepEqual(verdicts, [true], "期限で畳んでいない");
+
+  reg.waiting = null;
+  reg.active = worker;
+  worker.to("activated");
+  assert.deepEqual(
+    verdicts,
+    [true, false],
+    "遅れて活性化した版を言い直していない",
+  );
+});
+
+test("watchSonaeInstall: activating へ動いても期限を張り直さない", async () => {
+  // 遷移のたびに張り直すと上限が伸び続け、期限が事実上消える。
+  const worker = new FakeWorker();
+  const reg = new FakeReg({ installing: worker });
+  const verdicts = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, 200);
+  worker.to("installed"); // ここから 200ms
+  reg.installing = null;
+  reg.active = worker;
+  await sleep(120);
+  worker.to("activating"); // 張り直すと期限が 320ms 先へ延びる
+  await sleep(120); // 期限（200ms）は過ぎ、張り直した先（320ms）には届かない
+  assert.deepEqual(verdicts, [true], "遷移のたびに期限が伸びている");
+});
+
+test("watchSonaeInstall: 活性化の期限は版ごとに張り直す", async () => {
+  // 前の版に張った期限を持ち越すと、正常に install 中の新しい版を
+  // 古い期限が「そなえ不可」にする。
+  const first = new FakeWorker();
+  const reg = new FakeReg({ installing: first });
+  const verdicts = [];
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, APPEAR * 2);
+  first.to("installed");
+
+  const second = new FakeWorker();
+  reg.found(second); // 新しい配信が install を始めた
+  await settleGap();
+  assert.deepEqual(verdicts, [], "前の版の期限が新しい版を畳んでいる");
 });
 
 test("watchSonaeInstall: 結論は周回ごとに1回・新しい版で観測をやり直す", async () => {
   // 一度きりにすると、後から入った版の成否が札に出ない（古い結論で固まる）。
   const reg = new FakeReg();
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
   await settleGap();
   assert.deepEqual(verdicts, [true], "版が1つも無い状態を確定できていない");
 
@@ -1882,7 +2684,7 @@ test("watchSonaeInstall: 畳まれた古い版が新しい版の結論を横取�
   const first = new FakeWorker();
   const reg = new FakeReg({ installing: first });
   const verdicts = [];
-  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR, ACTIVATE);
 
   const second = new FakeWorker();
   reg.found(second); // 配信が入れ替わり、新しい版が install を始めた
@@ -1893,6 +2695,7 @@ test("watchSonaeInstall: 畳まれた古い版が新しい版の結論を横取�
   assert.equal(first.watchers, 0, "前の版の観測を外していない");
 
   second.to("installed");
+  second.to("activated"); // 活きた版が無いので、活性化まで見届けて確定する
   await settleGap();
   assert.deepEqual(verdicts, [false]);
   // 結論が出た版も見続けない（更新のたびに観測が積み上がる）。
@@ -1903,7 +2706,12 @@ test("watchSonaeInstall: 止めたら以後は何も報せない（消えた画�
   const worker = new FakeWorker();
   const reg = new FakeReg({ installing: worker });
   const verdicts = [];
-  const stop = watchSonaeInstall(reg, (failed) => verdicts.push(failed), APPEAR);
+  const stop = watchSonaeInstall(
+    reg,
+    (failed) => verdicts.push(failed),
+    APPEAR,
+    ACTIVATE,
+  );
   stop();
   reg.installing = null;
   worker.to("redundant");
@@ -1937,14 +2745,16 @@ function hideBody(res) {
 }
 
 /** 名前つきのキャッシュを持つだけの CacheStorage。open は生やさない。 */
-function fakeCacheStorage(contents, { failing = false } = {}) {
+function fakeCacheStorage(contents, { failing = false, silent = false } = {}) {
   return {
     opened: [],
     async keys() {
+      if (silent) await new Promise(() => {});
       if (failing) throw new Error("storage unavailable");
       return Object.keys(contents);
     },
     async match(url, options) {
+      if (silent) await new Promise(() => {});
       if (failing) throw new Error("storage unavailable");
       const names = options && options.cacheName ? [options.cacheName] : Object.keys(contents);
       for (const n of names) {
@@ -1955,6 +2765,18 @@ function fakeCacheStorage(contents, { failing = false } = {}) {
     },
   };
 }
+
+test("hasSonaeGeneration: 返らない記憶域は期限で「控え無し」に畳む", stalls, async () => {
+  // ここで止まると状態の確定そのものが返らず、札は最初の「そなえ中
+  // （開いたまま）」から二度と動かない（install の失敗も、制御が付いたことも
+  // 画面に出せなくなる）。無いのに有ると言うより、有るのに無いと言う方が
+  // 当日の事故が小さいので、畳む先は「控え無し」。
+  const shell = "https://x/app/tally/";
+  assert.equal(
+    await hasSonaeGeneration(fakeCacheStorage({}, { silent: true }), shell, 20),
+    false,
+  );
+});
 
 test("hasSonaeGeneration: 別置きの控えを「世代あり」と読まない", async () => {
   const shell = "https://x/app/tally/";

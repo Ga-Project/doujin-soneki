@@ -11,7 +11,7 @@
 // 語彙: 記帳データ（localStorage）は「保存」、アプリ本体の控えは「そなえ／控え」。
 // 混ぜない（何が端末に残っているのか読み手が分からなくなるため）。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   hasSonaeGeneration,
   resolveSonaeState,
@@ -121,6 +121,11 @@ export function useSonae(): {
   // 初期値は SSR と一致させるため固定。実際の状態は登録後に effect で確定する。
   const [state, setState] = useState<SonaeState>("junbi");
   const [showObi, setShowObi] = useState(false);
+  // この画面で閉じたか。既読の印は localStorage に書くが、書けない端末
+  // （記憶域を止めている設定）では読み返しても常に未読になる。状態は画面に
+  // 戻るたび測り直すので、この画面のあいだの記憶を持たないと、閉じた知らせが
+  // タブを行き来するたび出直してカウンターを覆う。
+  const dismissed = useRef(false);
 
   useEffect(() => {
     const supported =
@@ -143,10 +148,15 @@ export function useSonae(): {
       const mine = ++seq;
       // 控えの実在を実測する。制御が付いただけで「開けます」と言わない。
       // 判定そのもの（どのキャッシュを世代とみなすか）は lib/offline.ts が持つ。
-      const cached = await hasSonaeGeneration(
-        caches,
-        tallyShellUrl(BASE, location.origin),
-      );
+      // Cache Storage が無い環境では控え無しとみなす。素で触ると sync ごと
+      // 投げ、札が最初の「そなえ中」のまま二度と動かなくなる。
+      const cached =
+        typeof caches === "undefined"
+          ? false
+          : await hasSonaeGeneration(
+              caches,
+              tallyShellUrl(BASE, location.origin),
+            );
       // 追い越されていたら、この観測はもう古い。
       if (!alive || mine !== seq) return;
       const next = resolveSonaeState({
@@ -158,7 +168,10 @@ export function useSonae(): {
       setState(next);
       // 知らせは控えが揃った時だけ。既読にするのは実際に描画した側の責務
       // （復元バー等に譲って表示されなかった回で焼き切らないため）。
-      if (next === "ari" && !seenObi()) setShowObi(true);
+      // 控えが消えた回は下げる。知らせは「電波がなくても開けます」と言うので、
+      // 実体が無くなった後も出したままにすると、その場で裏切ることになる。
+      if (next !== "ari") setShowObi(false);
+      else if (!dismissed.current && !seenObi()) setShowObi(true);
     };
 
     let unwatch = (): void => {};
@@ -169,8 +182,11 @@ export function useSonae(): {
         void sync();
         return;
       }
-      // install が転けた版は activate されず redundant で終わる。
-      // controllerchange も来ないので、ここを見ないと「そなえ中」で止まる。
+      // 控えが取れなかったと確定したら札を動かす。install の失敗だけでなく、
+      // 活性化まで進まない（＝制御が付かない）場合もここに来る。どちらも
+      // controllerchange は来ないので、見ないと札が「そなえ中」で止まる。
+      // 期限で「取れない」と言った後に遅れて活性化したら、もう一度呼ばれて
+      // 言い直す（1回きりだと決めつけない）。
       unwatch = watchSonaeInstall(reg, (installFailed) => {
         if (!alive) return;
         failed = installFailed;
@@ -197,16 +213,29 @@ export function useSonae(): {
       void sync();
     };
     navigator.serviceWorker.addEventListener("controllerchange", onChange);
+
+    // 画面に戻ってきたら測り直す。控えは別のタブ（`?nosw`）や記憶域の追い出しで
+    // 消えることがあり、消えたことはどのイベントでも届かない。測り直さないと
+    // 「そなえ済（電波がなくても開けます）」の札が、実体が無くなった後も残り、
+    // 当日その場で裏切る。
+    const onVisible = (): void => {
+      if (document.visibilityState === "visible") void sync();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     void sync();
 
     return () => {
       alive = false;
       unwatch();
       navigator.serviceWorker.removeEventListener("controllerchange", onChange);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
-  const dismissObi = useCallback(() => setShowObi(false), []);
+  const dismissObi = useCallback(() => {
+    dismissed.current = true;
+    setShowObi(false);
+  }, []);
 
   return { state, showObi, dismissObi };
 }
