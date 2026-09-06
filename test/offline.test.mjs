@@ -391,3 +391,33 @@ test("removeSonae: 解除するのは自分の scope の登録だけ", () => {
     "オリジン全体の登録を解除している",
   );
 });
+
+test("stamp-sw.mjs: 世代名に Service Worker 自身を含める", () => {
+  // 含めないと、sw.js だけを直した配信で世代名が据え置かれ、install 中の版が
+  // 現に動いている版の控えを開く。put が1つ失敗すれば caches.delete(CACHE) で、
+  // 取り直しに失敗した端末が完全な控えごと失う。
+  const src = readFileSync(
+    new URL("../scripts/stamp-sw.mjs", import.meta.url),
+    "utf8",
+  );
+  const digest = src.indexOf('createHash("sha256")');
+  const worker = src.indexOf("digest.update(src)");
+  const files = src.indexOf("for (const p of precache) {", digest);
+  assert.ok(digest > 0 && worker > 0 && files > 0, "検査が空振り");
+  assert.ok(worker > digest, "sw を混ぜるのが digest の作成より前");
+  assert.ok(worker < files, "sw を混ぜるのが控えの走査より後");
+});
+
+test("useSonae: install の失敗を見届ける（そなえ中で止めない）", () => {
+  // register() は登録できた時点で解決する。その後 precache が欠けて版が
+  // redundant になっても controllerchange は来ないので、見ないと札が
+  // 「そなえ中」のまま止まり「開いたまま待て」と言い続ける。
+  const src = readFileSync(
+    new URL("../app/tally/useSonae.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /addEventListener\("statechange"/);
+  assert.match(src, /installing\.state === "redundant"/);
+  // 活きている版があるなら、畳まれたのは更新の試行だけ（控えは使える）
+  assert.match(src, /reg\.active === null/);
+});

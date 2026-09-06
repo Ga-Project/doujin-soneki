@@ -72,23 +72,46 @@ async function removeSonae(): Promise<void> {
 }
 
 /** Service Worker を登録する（冪等）。全ページから呼ばれる。 */
-export function registerSonae(): Promise<boolean> {
+export function registerSonae(): Promise<ServiceWorkerRegistration | null> {
   // 開発時は登録しない。控えが効くと編集が画面に反映されなくなる。
-  if (process.env.NODE_ENV !== "production") return Promise.resolve(false);
+  if (process.env.NODE_ENV !== "production") return Promise.resolve(null);
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
-    return Promise.resolve(false);
+    return Promise.resolve(null);
   }
   const search = typeof location === "undefined" ? "" : location.search;
   if (!shouldRegisterSonae({ search })) {
     void removeSonae();
-    return Promise.resolve(false);
+    return Promise.resolve(null);
   }
   return navigator.serviceWorker
     // updateViaCache:"none" ＝ sw.js 自体を HTTP キャッシュ越しに読ませない。
     // 控えが壊れたときの差し替え（README の止め方）が確実に届くようにする。
     .register(swPath(BASE), { scope: swScope(BASE), updateViaCache: "none" })
-    .then(() => true)
-    .catch(() => false);
+    .catch(() => null);
+}
+
+/**
+ * install の成否を見届ける。register() は登録できた時点で解決するので、
+ * その後 precache が欠けて版が redundant になっても呼び出し側は気づけない。
+ * その版はもう活性化しないため controllerchange も来ず、札は「そなえ中」の
+ * まま止まり、利用者に「開いたまま待て」と言い続けることになる。
+ *
+ * onFailed は「この端末で控えが取れなかった」と確定したときだけ呼ぶ。
+ * 活きている版が別にあるなら、redundant になったのは更新の試行が畳まれた
+ * だけで、控え（前の世代）はそのまま使える。
+ */
+function watchInstall(
+  reg: ServiceWorkerRegistration,
+  onSettled: (failed: boolean) => void,
+): () => void {
+  const installing = reg.installing;
+  if (installing === null) return () => {};
+  const onState = (): void => {
+    if (installing.state === "installing") return;
+    onSettled(installing.state === "redundant" && reg.active === null);
+  };
+  installing.addEventListener("statechange", onState);
+  return () => installing.removeEventListener("statechange", onState);
 }
 
 export function useSonae(): {
@@ -110,8 +133,11 @@ export function useSonae(): {
     }
 
     let alive = true;
-    const sync = async (failed: boolean): Promise<void> => {
-      const controlled = navigator.serviceWorker.controller !== null;
+    // 控えが取れないと確定したか。install の失敗は register() の解決より後に
+    // 分かるので、観測ごとの引数ではなくここに持つ（sync は非同期なので、
+    // 引数で渡すと先に始まった観測が後から「そなえ済」で上書きしてしまう）。
+    let failed = false;
+    const sync = async (): Promise<void> => {
       // 控えの実在を実測する。制御が付いただけで「開けます」と言わない。
       let cached = false;
       try {
@@ -125,7 +151,7 @@ export function useSonae(): {
       const next = resolveSonaeState({
         supported: true,
         failed,
-        controlled,
+        controlled: navigator.serviceWorker.controller !== null,
         cached,
       });
       setState(next);
@@ -134,20 +160,35 @@ export function useSonae(): {
       if (next === "ari" && !seenObi()) setShowObi(true);
     };
 
-    registerSonae().then((ok) => {
-      void sync(!ok);
+    let unwatch = (): void => {};
+    void registerSonae().then((reg) => {
+      if (!alive) return;
+      if (reg === null) {
+        failed = true;
+        void sync();
+        return;
+      }
+      // install が転けた版は activate されず redundant で終わる。
+      // controllerchange も来ないので、ここを見ないと「そなえ中」で止まる。
+      unwatch = watchInstall(reg, (installFailed) => {
+        if (!alive) return;
+        failed = installFailed;
+        void sync();
+      });
+      void sync();
     });
 
     // 初回訪問では登録直後にまだ controller が付いていない。制御が移った時点で
     // 「そなえ中 → そなえ済」へ繰り上げる（利用者を再読み込みまで待たせない）。
     const onChange = (): void => {
-      void sync(false);
+      void sync();
     };
     navigator.serviceWorker.addEventListener("controllerchange", onChange);
-    void sync(false);
+    void sync();
 
     return () => {
       alive = false;
+      unwatch();
       navigator.serviceWorker.removeEventListener("controllerchange", onChange);
     };
   }, []);
