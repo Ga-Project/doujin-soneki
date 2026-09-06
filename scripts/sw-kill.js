@@ -37,8 +37,18 @@ self.addEventListener("activate", (event) => {
       // 開き直した先が登録し直すとこの版が入り直し、解除と再読み込みを
       // 繰り返す（無限ループ）。ページ側の登録は app/config.ts の
       // SONAE_ENABLED = false で止めておくこと。片方だけでは止まらない。
+      // navigate() を持たない実装がある。素で呼ぶと unregister の後で投げ、
+      // 開き直しが起きないまま activate ごと失敗する（回復手段が要る場面で
+      // 静かに効かない）。拒まれた場合も、利用者が自分で開き直せば戻れる。
       const clients = await self.clients.matchAll({ type: "window" });
-      for (const client of clients) client.navigate(client.url);
+      for (const client of clients) {
+        if (typeof client.navigate !== "function") continue;
+        try {
+          await client.navigate(client.url);
+        } catch {
+          /* 開き直させられなくても解除は済んでいる */
+        }
+      }
     })(),
   );
 });

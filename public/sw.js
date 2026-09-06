@@ -56,14 +56,27 @@ const OPTIONAL = ["__OPTIONAL__"].filter((p) => p !== "__OPTIONAL__");
 // これを過ぎたら控えを返す。控えが無ければネットワークの完了を待つ。
 const NETWORK_TIMEOUT_MS = 3000;
 
-// 任意分の取得に与える上限（ms）。必須が揃っているのに任意の沈黙で
+// 任意分の「無音」の長さ（ms）。必須が揃っているのに任意の沈黙で
 // install が終わらない、という人質状態を作らないため。
 const OPTIONAL_TIMEOUT_MS = 8000;
 
-// 必須分の取得に与える上限（ms）。応答ヘッダが返っても本文が来ないことはあり、
-// 本文の転送（cache.put）で止まると install は無期限に開いたままになる
-// ＝端末は「そなえ中」から動かず、失敗として畳まれないので再試行もされない。
-// 1つの signal を取得と put の両方に張って、世代の成否ごと時間で畳む。
+// 別置きの裏更新に与える上限（ms）。応答は控えから既に返しているので、
+// ここで待ち続ける理由は無い。期限が無いと、沈黙した1本が waitUntil を
+// 握ったまま Service Worker を生かし続ける。
+const RUNTIME_TIMEOUT_MS = 15000;
+
+// 取得を諦めるまでの「無音」の長さ（ms）。**総時間の上限ではない**。
+//
+// 応答ヘッダが返っても本文が来ないことはあり、本文の転送（cache.put）で止まると
+// install は無期限に開いたままになる ＝端末は「そなえ中」から動かず、失敗として
+// 畳まれないので再試行もされない。だから期限は要る。
+//
+// ただし**総時間**で切ってはならない。取得は同時に走って回線を分け合うので、
+// 総時間で切ると、1本ずつは進んでいるのに全部が同時に期限へ当たり、世代ごと
+// 捨てられる ＝「遅いだけで繋がる回線」を「控えが取れない端末」に落とす。
+// それはこの機能が守ろうとしている当のもの。
+// そこで、ヘッダまではこの長さで待ち、本文は「この長さのあいだ1バイトも
+// 来なければ諦める」（進んでいる限り待つ）で見る。
 const REQUIRED_TIMEOUT_MS = 30000;
 
 // `?nosw` を受けた後は、この版は何も横取りしない。
@@ -75,6 +88,201 @@ let optedOut = false;
 /** scope 基準の絶対 URL に解決する。 */
 function scoped(path) {
   return new URL(path, self.registration.scope).toString();
+}
+
+/**
+ * 期限付きの中断 signal を作る。`AbortSignal.timeout()` は使わない。
+ *
+ * Service Worker は動くのに静的ヘルパーだけ無いブラウザ（古い Safari/iOS 等）が
+ * 実在し、そこでは `AbortSignal.timeout(...)` の評価そのものが投げる。投げる
+ * 場所が install の頭なので、必須分の取得へ入る前に install ごと reject し、
+ * その端末は控えを一切持てなくなる（＝オフライン対応が丸ごと消える）。
+ * `AbortController` + `setTimeout` なら、Service Worker がある環境には必ず有る。
+ *
+ * 返り値の `done()` は必ず呼ぶこと（呼ばないと期限まで待つタイマーが残り、
+ * 取得が早く終わった分だけ Service Worker の生存が無駄に延びる）。
+ *
+ * `expired` は期限で false に解決する時計。中断そのものが無い環境（signal を
+ * 渡せない）でも、これと競走させれば「いつまでも終わらない」を作らずに済む。
+ * 期限が signal だけに乗っていると、中断が無い端末では install が永遠に開いた
+ * まま＝札が「そなえ中」から動かず、失敗として畳まれず再試行もされない。
+ */
+function timeoutSignal(ms) {
+  const controller =
+    typeof AbortController === "undefined" ? null : new AbortController();
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      if (controller !== null) controller.abort();
+      resolve(false);
+    }, ms);
+  });
+  return {
+    signal: controller === null ? undefined : controller.signal,
+    expired,
+    done() {
+      clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * `waitUntil` に渡す裏仕事の「引き延ばし」に上限を置く。
+ *
+ * 仕事そのものは止めない（応答は既に返しているので中断する理由が無い）。
+ * 上限を越えたら Service Worker を生かし続けるのをやめるだけ。期限が無いと、
+ * 沈黙した1本が waitUntil を握ったまま端末の電池を削る。
+ */
+function atMost(work, ms) {
+  let timer;
+  const capped = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  return Promise.race([work, capped]).then(
+    () => clearTimeout(timer),
+    () => clearTimeout(timer),
+  );
+}
+
+/**
+ * 本文を読み切って、控えに書ける形にして返す。
+ * 「ms のあいだ1バイトも来なければ諦める」で見る（止まったら諦める）。
+ *
+ * 総時間で切ってはならない。取得は同時に走って回線を分け合うので、総時間の
+ * 期限は事実上いつも全部に同時に当たり、遅いだけで繋がる回線を「控えが
+ * 取れない端末」に落とす。無音で見れば、進んでいる転送は最後まで通る。
+ *
+ * 読み切ってから組み直すのは、**流れのまま控えへ渡さない**ため。流れを本文に
+ * 持つ応答を組めない実装があり、そこで転ぶと「取れたはずの1本」が取れない
+ * 扱いになって世代ごと落ちる。バイト列からなら、Service Worker のある環境なら
+ * どこでも組める。
+ *
+ * 本文を読めない実装（`response.body` を持たない）では、元の応答をそのまま
+ * 返す。その場合ここでは無音を見られないので、期限は呼び出し側の
+ * 「控えへ書く」段（総時間）だけが持つ。無音が続いたときは投げる。
+ */
+async function bodyWithin(res, ms) {
+  if (!res.body || typeof res.body.getReader !== "function") return res;
+  const reader = res.body.getReader();
+  const parts = [];
+  let size = 0;
+  let timer;
+  try {
+    for (;;) {
+      const idle = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      });
+      const chunk = await Promise.race([reader.read(), idle]);
+      clearTimeout(timer);
+      if (chunk === null) throw new Error("stalled");
+      if (chunk.done) break;
+      parts.push(chunk.value);
+      size += chunk.value.length;
+    }
+  } catch (e) {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => {
+      /* 既に閉じている */
+    });
+    throw e;
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    bytes.set(part, at);
+    at += part.length;
+  }
+  return new Response(bytes, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  });
+}
+
+/**
+ * 1本を取得し、そのまま控えへ書く。
+ *
+ * 取得（ヘッダ）・本文・書き込みの3つに、それぞれ期限を持たせる。どれか1つ
+ * でも期限が無いと、そこで止まった端末の install が開いたままになり、札は
+ * 「そなえ中」から動かず、失敗として畳まれないので再試行もされない。
+ *
+ * 取れたら true。取れない（非OK・失敗・期限切れ・書き込み失敗）なら false。
+ * 書き込みの失敗を false に含めるのが要点で、本文の転送で切れる失敗は
+ * res.ok を素通りしてここへ来る。
+ */
+async function fetchInto(cache, url, ms) {
+  // ① ヘッダまで。中断が使えない端末では signal が効かないので、時計とも
+  //    競走させる（どちらの端末でも必ず畳めるようにする）。
+  const head = timeoutSignal(ms);
+  let res;
+  try {
+    const fetching = fetch(url, { cache: "reload", signal: head.signal });
+    res = await Promise.race([fetching, head.expired.then(() => null)]);
+    if (res === null) {
+      // 見切った後で届くことがある（中断が使えない端末では走り続ける）。
+      // 読まれない流れを worker に溜めないよう、届いたら閉じる。
+      void fetching.then(discardBody, () => {
+        /* 届かなかったなら閉じるものも無い */
+      });
+      return false;
+    }
+    if (!res.ok) {
+      // 使わない応答は本文を閉じる（会場の捕捉ページが毎回 503 を返すと、
+      // 読まれない流れが取得の数だけ worker に溜まる）。
+      discardBody(res);
+      return false;
+    }
+  } catch {
+    return false;
+  } finally {
+    head.done();
+  }
+
+  // ② 本文。進んでいる限り待ち、無音が続いたら諦める。
+  let body;
+  try {
+    body = await bodyWithin(res, ms);
+  } catch {
+    return false;
+  }
+
+  // ③ 控えへ書く。ここにも必ず期限を置く（記憶域が詰まったまま返らないと、
+  //    install が開いたままになり、札が「そなえ中」から動かない）。
+  const write = timeoutSignal(ms);
+  try {
+    const put = cache.put(url, body).then(() => true);
+    const written = await Promise.race([put, write.expired]);
+    if (written) return true;
+    // 見切った後で書き終わることがある。封をした世代に残すと、別の版の
+    // バイトが世代の内側に混ざりうるので、書き終わり次第それを取り消す。
+    void put.then(
+      () =>
+        cache.delete(url).catch(() => {
+          /* 消せなくても、この1本を「取れた」とは数えない */
+        }),
+      () => {
+        /* 書けずに終わったなら残らない */
+      },
+    );
+    return false;
+  } catch {
+    return false;
+  } finally {
+    write.done();
+  }
+}
+
+/**
+ * 使わない応答の本文を閉じる。読まれない流れを worker に溜めないため。
+ * 時間切れで見切った後に届く分も、ここを通して閉じる。
+ */
+function discardBody(res) {
+  if (!res || !res.body) return;
+  try {
+    void res.body.cancel().catch(() => {});
+  } catch {
+    /* 既に読まれている／閉じられている */
+  }
 }
 
 /** 控えに入れられなくても表示は妨げない（quota 超過などで put は失敗しうる）。 */
@@ -113,6 +321,9 @@ function matchAsset(cache, request) {
  * 資産を控えるときの鍵。RSC ペイロードだけはクエリを落として書く。
  * 落とさないと、遷移のたびに違う `?_rsc=<hash>` で同じ実体が積み上がり、
  * 照合（ignoreSearch）は最初の1つに当たり続けるので、増えた分は死蔵になる。
+ *
+ * 効くのは別置きだけ（世代に入っている `index.txt` は上の控えで返るので
+ * ここへ来ない）。すなわち、任意分が取れなかった端末の周辺ページが対象。
  */
 function assetKey(request) {
   const url = new URL(request.url);
@@ -131,58 +342,50 @@ self.addEventListener("install", (event) => {
       if (BUILD === "__BUILD__" || REQUIRED.length === 0) {
         throw new Error("sw is not stamped");
       }
-      // 必須分は all-or-nothing（版ズレを構造的に防ぐ）。
-      // 1つの signal を取得と下の put で共有する。put の途中で本文が止まっても
-      // 期限で abort され、install が開いたままにならない。
-      const signal = AbortSignal.timeout(REQUIRED_TIMEOUT_MS);
-      const entries = await Promise.all(
-        REQUIRED.map(async (path) => {
-          const url = scoped(path);
-          try {
-            const res = await fetch(url, { cache: "reload", signal });
-            return res.ok ? [url, res] : null;
-          } catch {
-            return null;
-          }
-        }),
-      );
-      if (entries.some((e) => e === null)) {
-        // 取り切れなかった＝この世代は名乗らない。**throw する**のが要点で、
-        // ここで return すると install が「成功」として解決してしまい、
-        // sw.js のバイトが変わらない限り二度と install が走らない
-        // ＝一度取りこぼした端末が次のデプロイまで永久に控えを持てない。
-        throw new Error("precache incomplete");
+      // 活きている版がまだ無い端末に限り、先に古い `soneki-*` を掃除する。
+      // install が途中で強制終了（タブを閉じた・端末が worker を回収した）
+      // されると書きかけの世代が残るが、その掃除は activate ＝**成功した
+      // install の後**にしか走らない。会場で install が続けて失敗する端末では
+      // 掃除の機会が来ないまま容量だけが埋まり、やがて put が通らなくなって
+      // 控えを永久に持てなくなる。
+      // 活きている版がある場合は触らない（今まさに配っている控えを抜く）。
+      if (self.registration.active === null) {
+        const stale = await caches.keys();
+        await Promise.all(
+          stale
+            .filter((n) => n.startsWith("soneki-") && n !== CACHE && n !== RUNTIME)
+            .map((n) => caches.delete(n)),
+        );
       }
-      // ここでの put 失敗は「控えが1つ増えない」ではなく「版ズレした世代が
-      // 成立する」ことを意味する（本文の転送は put の中で起きるので、
-      // 混雑した回線で切れる失敗は res.ok を素通りしてここへ来る）。
-      // したがって install では握りつぶさず、欠けたら世代ごと捨てる。
+
+      // 必須分は all-or-nothing（版ズレを構造的に防ぐ）。
+      // 1本ずつ「取得してその場で控える」。期限も1本ごとに張る。
       const cache = await caches.open(CACHE);
-      try {
-        for (const [url, res] of entries) await cache.put(url, res);
-      } catch (e) {
+      const got = await Promise.all(
+        REQUIRED.map((path) =>
+          fetchInto(cache, scoped(path), REQUIRED_TIMEOUT_MS),
+        ),
+      );
+      if (got.some((ok) => !ok)) {
+        // 取り切れなかった＝この世代は名乗らない。
+        // 書きかけを残さない（半端な世代が残ると、版ズレした一式が
+        // 「揃っている」ものとして読まれる）。
         await caches.delete(CACHE);
-        throw e;
+        // **throw する**のが要点で、ここで return すると install が「成功」と
+        // して解決してしまい、sw.js のバイトが変わらない限り二度と install が
+        // 走らない＝一度取りこぼした端末が次のデプロイまで永久に控えを持てない。
+        throw new Error("precache incomplete");
       }
 
       // 周辺ページは取れたら控える（取れなくても世代は成立させる）。
       // 必須集合を小さく保つほど、混雑した回線での成立率が上がる。
-      // 任意分に時間切れを付ける。付けないと、必須が全て揃っているのに
+      // 任意分にも時間切れを付ける。付けないと、必須が全て揃っているのに
       // 任意の1本が無応答（エラーではなく沈黙）なだけで install が完了せず、
       // activate も「そなえ済」への繰り上げも起きない。
       await Promise.all(
-        OPTIONAL.map(async (path) => {
-          const url = scoped(path);
-          try {
-            const res = await fetch(url, {
-              cache: "reload",
-              signal: AbortSignal.timeout(OPTIONAL_TIMEOUT_MS),
-            });
-            if (res.ok) await putSafe(cache, url, res);
-          } catch {
-            /* 任意なので取れなくてよい */
-          }
-        }),
+        OPTIONAL.map((path) =>
+          fetchInto(cache, scoped(path), OPTIONAL_TIMEOUT_MS),
+        ),
       );
 
       // 初回インストール（既存の版が無い）に限り、待たずに制御下へ入る。
@@ -251,16 +454,17 @@ a{color:#2f5aa0}
 }
 
 /** ネットワークを待ちつつ、時間切れなら控えを返す（控えが無ければ待ち続ける）。 */
-async function networkFirstWithFallback(event, request, cache) {
+async function networkFirstWithFallback(request, cache) {
   const cached = await matchPage(cache, request);
   // ネットワークで取れた本文を**世代の控えに書き戻さない**。
   // 書き戻すと「HTML だけ新しい世代・JS は古い世代のまま」という版ズレを
   // 世代キャッシュの内側に作れてしまう（install の all-or-nothing が守って
   // いる不変条件を、実行時の1行が破る）。控えの更新は
   // 「sw の更新 → install → activate」だけが行う。
+  // 控えには書かないので、この取得の結果を読むのは下の勝負だけ。
+  // だから waitUntil で引き延ばさない。引き延ばすと、控えを返して用が済んだ後も
+  // 沈黙した1本のために Service Worker が生かされ続ける（会場では電池が要る）。
   const network = fetch(request).catch(() => null);
-  // 勝敗が決まっても裏の取得は最後まで走らせる（控えには書かない）
-  event.waitUntil(network);
 
   if (cached) {
     let timer;
@@ -275,10 +479,20 @@ async function networkFirstWithFallback(event, request, cache) {
     // 同じ扱いにする。控えのある URL が正しく転送されることはこの静的配信では無く、
     // 会場で転送が返るのはたいてい接続前のログイン画面だからである。
     // 控えが無い場合は下で素通しするので、正当な転送はブラウザが追える。
-    return winner && winner.ok ? winner : cached;
+    if (winner && winner.ok) return winner;
+    // 使わない応答は本文を閉じる。開いたままにすると、混雑した回線で
+    // 読まれない流れが worker に溜まる。
+    discardBody(winner);
+    // 時間切れで見切った側は、この後で届く。届いた分も閉じる
+    // （会場で常に通るのはこちらの経路なので、ここを抜かすと意味が無い）。
+    if (winner === null) void network.then(discardBody);
+    return cached;
   }
 
-  return (await network) ?? offlineNotice(request);
+  // `??` は使わない。この1行の構文だけで、Service Worker は動くが新しい構文を
+  // 解さないブラウザで sw.js 全体が読めなくなる（＝控えが丸ごと取れない）。
+  const fetched = await network;
+  return fetched === null ? offlineNotice(request) : fetched;
 }
 
 self.addEventListener("fetch", (event) => {
@@ -321,56 +535,98 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(
     (async () => {
-      const cache = await caches.open(CACHE);
-      if (request.mode === "navigate") {
-        return networkFirstWithFallback(event, request, cache);
-      }
-
-      // この世代の控え。ハッシュ付き資産も RSC ペイロードも manifest も、
-      // 世代内で完結しているのでそのまま出す（そして書き換えない）。
-      //
-      // RSC ペイロードはハッシュを持たない（`<ルート>/index.txt`）ので、更新の直後、
-      // 旧版が現役のまま新しい HTML をネットワークから受け取ったページに対して、
-      // 旧世代のペイロードを返す組み合わせが起こりうる。ここをネットワーク優先に
-      // 倒さないのは、当日の会場（遅いが繋がる回線）で画面の行き来のたびに
-      // 時間切れまで待たせることになり、この機能が守ろうとしている当のものを
-      // 損なうため。版が食い違ったとき Next は payload の buildId を突き合わせて
-      // ブラウザ遷移に落とす（fetchServerResponse: `if (buildId !== payloadBuildId)`
-      // で MPA 遷移へ）ので、結果は「その1回だけ全体再読み込みになる」で収まり、
-      // 古い内容が出たり遷移が壊れたりはしない。
-      // ここで裏の更新をかけると、新しいデプロイの実体が旧世代の中に混ざり、
-      // all-or-nothing が守っている版の一致がその世代の内側で崩れる。
-      const shipped = await matchAsset(cache, request);
-      if (shipped) return shipped;
-
-      // ここから先は世代に属さない同一オリジンの取得物。書くのは別置きだけ。
-      const runtime = await caches.open(RUNTIME);
-      const cached = await matchAsset(runtime, request);
-      const key = assetKey(request);
-
-      // 控え優先で出しつつ裏で更新しておく
-      if (cached) {
-        event.waitUntil(
-          fetch(request)
-            .then(async (res) => {
-              if (res.ok) await putSafe(runtime, key, res);
-            })
-            .catch(() => {
-              /* 圏外。控えのままでよい */
-            }),
-        );
-        return cached;
-      }
-
       try {
-        const res = await fetch(request);
-        // 控えへの書き込みを待たずに返す（長いストリームで応答が止まらないよう）
-        if (res.ok) event.waitUntil(putSafe(runtime, key, res.clone()));
-        return res;
+        return await respond(event, request);
       } catch {
-        // navigate は上で処理済みなのでここには来ない
-        return Response.error();
+        // Cache Storage が読めない端末（容量逼迫・記憶域の破損）でここが
+        // 転ぶと、respondWith は network error になる ＝回線が完全でも
+        // サイトが開けない。Service Worker が居ない方がマシ、という状態を
+        // 作らないため、素通しに落とす。
+        try {
+          return await fetch(request);
+        } catch {
+          return request.mode === "navigate"
+            ? offlineNotice(request)
+            : Response.error();
+        }
       }
     })(),
   );
 });
+
+/** 取り出しの本体（控え→別置き→ネットワーク）。 */
+async function respond(event, request) {
+  const cache = await caches.open(CACHE);
+  if (request.mode === "navigate") {
+    return networkFirstWithFallback(request, cache);
+  }
+
+  // この世代の控え。ハッシュ付き資産も RSC ペイロードも manifest も、
+  // 世代内で完結しているのでそのまま出す（そして書き換えない）。
+  //
+  // RSC ペイロードはハッシュを持たない（`<ルート>/index.txt`）ので、更新の直後、
+  // 旧版が現役のまま新しい HTML をネットワークから受け取ったページに対して、
+  // 旧世代のペイロードを返す組み合わせが起こりうる。ここをネットワーク優先に
+  // 倒さないのは、当日の会場（遅いが繋がる回線）で画面の行き来のたびに
+  // 時間切れまで待たせることになり、この機能が守ろうとしている当のものを
+  // 損なうため。版が食い違ったとき Next は payload の buildId を突き合わせて
+  // ブラウザ遷移に落とす（fetchServerResponse: `if (buildId !== payloadBuildId)`
+  // で MPA 遷移へ）ので、結果は「その1回だけ全体再読み込みになる」で収まり、
+  // 古い内容が出たり遷移が壊れたりはしない。
+  // ここで裏の更新をかけると、新しいデプロイの実体が旧世代の中に混ざり、
+  // all-or-nothing が守っている版の一致がその世代の内側で崩れる。
+  const shipped = await matchAsset(cache, request);
+  if (shipped) return shipped;
+
+  // ここから先は世代に属さない同一オリジンの取得物。書くのは別置きだけ。
+  const runtime = await caches.open(RUNTIME);
+  const cached = await matchAsset(runtime, request);
+  const key = assetKey(request);
+
+  // 控え優先で出しつつ裏で更新しておく。
+  // 裏の更新にも期限を置く。既に控えを返した後なので待つ理由が無く、
+  // 期限が無いと沈黙した1本が waitUntil を握ったまま Service Worker を
+  // 生かし続ける（会場では端末の電池が要る）。
+  if (cached) {
+    const budget = timeoutSignal(RUNTIME_TIMEOUT_MS);
+    const refresh = fetch(request, { signal: budget.signal })
+      .then(async (res) => {
+        if (res.ok) await putSafe(runtime, key, res);
+        else discardBody(res);
+      })
+      .catch(() => {
+        /* 圏外・時間切れ。控えのままでよい */
+      })
+      .then(() => budget.done());
+    // signal だけに頼らない。中断が使えない端末では signal が効かず、
+    // 沈黙した1本が waitUntil を握ったまま worker を生かし続ける。
+    event.waitUntil(atMost(refresh, RUNTIME_TIMEOUT_MS));
+    return cached;
+  }
+
+  let res;
+  try {
+    res = await fetch(request);
+  } catch {
+    // 圏外。ここで投げると外側の受けが**もう一度**取りに行くので、
+    // 混雑した回線で待ち時間が倍になる。navigate は上で処理済み。
+    return Response.error();
+  }
+  // 控えへの書き込みを待たずに返す（長いストリームで応答が止まらないよう）。
+  // 書き込みは裏で行う。ここで縛れるのは **Service Worker の寿命だけ** で、
+  // 複製の読み出し自体は止められない（この応答はページへ返すものなので、
+  // signal で中断するとページの読み込みごと壊す）。
+  //
+  // ここを try で覆わない。取れた応答を、控えへの書き込みの都合（waitUntil が
+  // 受け付けない・複製できない）で捨ててはならない。
+  if (res.ok) {
+    try {
+      event.waitUntil(
+        atMost(putSafe(runtime, key, res.clone()), RUNTIME_TIMEOUT_MS),
+      );
+    } catch {
+      /* 控えが1つ増えないだけ。取れた応答はそのまま返す */
+    }
+  }
+  return res;
+}

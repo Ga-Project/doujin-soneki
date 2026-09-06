@@ -13,11 +13,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  hasSonaeGeneration,
   resolveSonaeState,
   shouldRegisterSonae,
   swPath,
   swScope,
   tallyShellUrl,
+  watchSonaeInstall,
   type SonaeState,
 } from "@/lib/offline";
 import { SONAE_ENABLED, SONAE_SEEN_NAME } from "../config";
@@ -56,15 +58,26 @@ export function markObiSeen(): void {
  * 宙ぶらりんになる。
  */
 async function removeSonae(): Promise<void> {
+  // 登録の解除と控えの破棄を**別々に**守る。1つの try で括ると、解除の失敗で
+  // 控えの破棄まで飛ばされる（逃げ道が「前半が成功すること」に依存する）。
   try {
     const scope = new URL(swScope(BASE), location.origin).toString();
     const regs = await navigator.serviceWorker.getRegistrations();
+    // 1つの解除が転けても残りを解除する。
     await Promise.all(
-      regs.filter((r) => r.scope === scope).map((r) => r.unregister()),
+      regs
+        .filter((r) => r.scope === scope)
+        .map((r) => r.unregister().catch(() => false)),
     );
+  } catch {
+    /* 解除できない環境。控えの破棄は下で続ける */
+  }
+  try {
     const keys = await caches.keys();
     await Promise.all(
-      keys.filter((k) => k.startsWith("soneki-")).map((k) => caches.delete(k)),
+      keys
+        .filter((k) => k.startsWith("soneki-"))
+        .map((k) => caches.delete(k).catch(() => false)),
     );
   } catch {
     /* 消せなくても画面は妨げない。sw 側の撤去も同じことを試みている */
@@ -78,42 +91,25 @@ export function registerSonae(): Promise<ServiceWorkerRegistration | null> {
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
     return Promise.resolve(null);
   }
-  // 止め方（kill switch）が効いている配信では、そもそも登録しない。
+  // 止め方（kill switch）と `?nosw` の判定は lib/offline.ts が持つ。
   // ここを通すと、取り消し版が入り直して解除と再読み込みを繰り返す。
   const search = typeof location === "undefined" ? "" : location.search;
-  if (!SONAE_ENABLED || !shouldRegisterSonae({ search })) {
+  if (!shouldRegisterSonae({ enabled: SONAE_ENABLED, search })) {
     void removeSonae();
     return Promise.resolve(null);
   }
-  return navigator.serviceWorker
-    // updateViaCache:"none" ＝ sw.js 自体を HTTP キャッシュ越しに読ませない。
-    // 控えが壊れたときの差し替え（README の止め方）が確実に届くようにする。
-    .register(swPath(BASE), { scope: swScope(BASE), updateViaCache: "none" })
-    .catch(() => null);
-}
-
-/**
- * install の成否を見届ける。register() は登録できた時点で解決するので、
- * その後 precache が欠けて版が redundant になっても呼び出し側は気づけない。
- * その版はもう活性化しないため controllerchange も来ず、札は「そなえ中」の
- * まま止まり、利用者に「開いたまま待て」と言い続けることになる。
- *
- * onFailed は「この端末で控えが取れなかった」と確定したときだけ呼ぶ。
- * 活きている版が別にあるなら、redundant になったのは更新の試行が畳まれた
- * だけで、控え（前の世代）はそのまま使える。
- */
-function watchInstall(
-  reg: ServiceWorkerRegistration,
-  onSettled: (failed: boolean) => void,
-): () => void {
-  const installing = reg.installing;
-  if (installing === null) return () => {};
-  const onState = (): void => {
-    if (installing.state === "installing") return;
-    onSettled(installing.state === "redundant" && reg.active === null);
-  };
-  installing.addEventListener("statechange", onState);
-  return () => installing.removeEventListener("statechange", onState);
+  try {
+    return navigator.serviceWorker
+      // updateViaCache:"none" ＝ sw.js 自体を HTTP キャッシュ越しに読ませない。
+      // 控えが壊れたときの差し替え（README の止め方）が確実に届くようにする。
+      .register(swPath(BASE), { scope: swScope(BASE), updateViaCache: "none" })
+      .catch(() => null);
+  } catch {
+    // register() は同期に投げることがある（scope の解決に失敗する配信など）。
+    // この関数はレイアウト（SonaeRegister）からも呼ばれるので、投げると
+    // 控えが取れないどころか画面そのものが出なくなる。
+    return Promise.resolve(null);
+  }
 }
 
 export function useSonae(): {
@@ -139,17 +135,20 @@ export function useSonae(): {
     // 分かるので、観測ごとの引数ではなくここに持つ（sync は非同期なので、
     // 引数で渡すと先に始まった観測が後から「そなえ済」で上書きしてしまう）。
     let failed = false;
+    // 観測の通し番号。sync は非同期なので、先に始まった観測が後から
+    // 古い実測値で上書きしうる（控えが揃った端末の札が「そなえ中」に戻る）。
+    // 追い越されたものは捨てる。
+    let seq = 0;
     const sync = async (): Promise<void> => {
+      const mine = ++seq;
       // 控えの実在を実測する。制御が付いただけで「開けます」と言わない。
-      let cached = false;
-      try {
-        cached =
-          (await caches.match(tallyShellUrl(BASE, location.origin))) !==
-          undefined;
-      } catch {
-        /* Cache Storage を読めない環境は控え無しとみなす */
-      }
-      if (!alive) return;
+      // 判定そのもの（どのキャッシュを世代とみなすか）は lib/offline.ts が持つ。
+      const cached = await hasSonaeGeneration(
+        caches,
+        tallyShellUrl(BASE, location.origin),
+      );
+      // 追い越されていたら、この観測はもう古い。
+      if (!alive || mine !== seq) return;
       const next = resolveSonaeState({
         supported: true,
         failed,
@@ -172,17 +171,29 @@ export function useSonae(): {
       }
       // install が転けた版は activate されず redundant で終わる。
       // controllerchange も来ないので、ここを見ないと「そなえ中」で止まる。
-      unwatch = watchInstall(reg, (installFailed) => {
+      unwatch = watchSonaeInstall(reg, (installFailed) => {
         if (!alive) return;
         failed = installFailed;
         void sync();
       });
+      // ここで sync() を足さない。watchSonaeInstall は張った時点で決着を
+      // 見に行き、決着したら上の onSettled から sync() が走る。決着して
+      // いない（install 中の）ときの初期表示は、下の無条件の sync() が持つ。
+    }).catch(() => {
+      // ここで投げると unwatch が入らないまま観測が残り（画面を離れても
+      // 外れない）、札は結論を待ち続けて「そなえ中」で止まる。
+      if (!alive) return;
+      failed = true;
       void sync();
     });
 
     // 初回訪問では登録直後にまだ controller が付いていない。制御が移った時点で
     // 「そなえ中 → そなえ済」へ繰り上げる（利用者を再読み込みまで待たせない）。
     const onChange = (): void => {
+      // 制御が付いた＝版が活きた。以前に「取れなかった」と確定させた判定は
+      // もう古い。残したままだと、控えが実在するのに札が「そなえ不可」で
+      // 固まり、当日「電波が要る」と誤った段取りを組ませる。
+      failed = false;
       void sync();
     };
     navigator.serviceWorker.addEventListener("controllerchange", onChange);

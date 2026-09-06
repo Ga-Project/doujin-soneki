@@ -84,6 +84,12 @@ const digest = createHash("sha256");
 // （直しを配ったことが、当日ひらけなくなる原因になる）。
 // 焼き込み前の中身を使う。焼き込み後は世代名を含むので循環する。
 digest.update(src);
+// 焼き込む値そのものも混ぜる。sw.js の雛形と控える中身が同じでも、
+// 出口（SHELL_MAIN）や必須／任意の切り分けが変われば配られる sw.js は
+// 別物になる。世代名が据え置かれると、上と同じ「現に動いている版の控えを
+// install 中の版が開く」に戻る（scripts/ は out/ に入らないので、
+// この 1 行が無いと切り分けの変更は世代名に一切反映されない）。
+digest.update(JSON.stringify({ shellMain: PRIMARY_SHELL, required, optional }));
 for (const p of precache) {
   digest.update(p);
   digest.update(await readFile(join(OUT, p === "" ? "index.html" : p.endsWith("/") ? `${p}index.html` : p)));
