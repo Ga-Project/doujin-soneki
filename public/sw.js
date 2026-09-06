@@ -13,10 +13,17 @@
  * 画面は出るのに操作が効かない（＝会場で最悪の）無音の failure になる。
  * 控える一覧とビルド印は `scripts/stamp-sw.mjs` がビルド後に焼き込む。
  *
+ * ■ 世代は install で封をする（後から書き換えない）
+ * install を終えた世代のキャッシュには、以後 **一切書かない**。
+ * 後から新しい応答で一部だけ差し替えると、「HTML や RSC は新版・JS は旧版」という
+ * 版ズレが、all-or-nothing で守ったはずの世代の内側に成立してしまうため。
+ * 更新は「sw の更新 → install → activate」だけが行う。
+ * 世代に属さない同一オリジンの取得物は、別置きの `soneki-rt-<ビルド印>` に置く。
+ *
  * ■ 取り出し方（3種類だけ）
  *   1. ページ遷移(navigate) … ネットワーク優先＋時間切れで控えへ（遅い会場回線で待たされない）
- *   2. その世代の資産        … 控え優先（世代内で完結しているので必ず整合する）
- *   3. それ以外の同一オリジン … 控えがあれば出しつつ裏で更新
+ *   2. その世代の資産        … 控えをそのまま（世代内で完結しているので必ず整合する）
+ *   3. それ以外の同一オリジン … 別置きに控えがあれば出しつつ裏で更新
  * 別オリジン（アクセス解析など）は一切介入しない。
  *
  * ■ 逃げ道（回復手段）
@@ -26,7 +33,10 @@
 
 // ビルドごとに一意な世代名。stamp-sw.mjs がこの宣言を置換する。
 const BUILD = "__BUILD__";
+// 世代の控え。install でだけ書き、以後は読むだけ（＝封をする）。
 const CACHE = `soneki-${BUILD}`;
+// 世代に属さない同一オリジンの取得物の置き場。fetch から書くのはこちらだけ。
+const RUNTIME = `soneki-rt-${BUILD}`;
 
 // 圏外の受け皿から戻す先。stamp-sw.mjs が lib/offline.ts の PRIMARY_SHELL を
 // 焼き込む。必須一覧から辞書順で拾うと、ページが増えた日に唯一の出口が
@@ -49,6 +59,12 @@ const NETWORK_TIMEOUT_MS = 3000;
 // 任意分の取得に与える上限（ms）。必須が揃っているのに任意の沈黙で
 // install が終わらない、という人質状態を作らないため。
 const OPTIONAL_TIMEOUT_MS = 8000;
+
+// 必須分の取得に与える上限（ms）。応答ヘッダが返っても本文が来ないことはあり、
+// 本文の転送（cache.put）で止まると install は無期限に開いたままになる
+// ＝端末は「そなえ中」から動かず、失敗として畳まれないので再試行もされない。
+// 1つの signal を取得と put の両方に張って、世代の成否ごと時間で畳む。
+const REQUIRED_TIMEOUT_MS = 30000;
 
 // `?nosw` を受けた後は、この版は何も横取りしない。
 // 逃げ道のページ自身が読む資産（`_next/static/...`）には `?nosw` が付かないので
@@ -93,6 +109,18 @@ function matchAsset(cache, request) {
   });
 }
 
+/**
+ * 資産を控えるときの鍵。RSC ペイロードだけはクエリを落として書く。
+ * 落とさないと、遷移のたびに違う `?_rsc=<hash>` で同じ実体が積み上がり、
+ * 照合（ignoreSearch）は最初の1つに当たり続けるので、増えた分は死蔵になる。
+ */
+function assetKey(request) {
+  const url = new URL(request.url);
+  if (!url.pathname.endsWith("/index.txt")) return request.url;
+  url.search = "";
+  return url.toString();
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
@@ -104,11 +132,14 @@ self.addEventListener("install", (event) => {
         throw new Error("sw is not stamped");
       }
       // 必須分は all-or-nothing（版ズレを構造的に防ぐ）。
+      // 1つの signal を取得と下の put で共有する。put の途中で本文が止まっても
+      // 期限で abort され、install が開いたままにならない。
+      const signal = AbortSignal.timeout(REQUIRED_TIMEOUT_MS);
       const entries = await Promise.all(
         REQUIRED.map(async (path) => {
           const url = scoped(path);
           try {
-            const res = await fetch(url, { cache: "reload" });
+            const res = await fetch(url, { cache: "reload", signal });
             return res.ok ? [url, res] : null;
           } catch {
             return null;
@@ -168,10 +199,11 @@ self.addEventListener("activate", (event) => {
     (async () => {
       // 旧世代を掃除する。activate は全クライアントが離れた後なので、
       // 開いているページの足元から資産を抜くことにはならない。
+      // 現世代の控えと、その世代に紐づく別置き（runtime）の2つだけ残す。
       const names = await caches.keys();
       await Promise.all(
         names
-          .filter((n) => n.startsWith("soneki-") && n !== CACHE)
+          .filter((n) => n.startsWith("soneki-") && n !== CACHE && n !== RUNTIME)
           .map((n) => caches.delete(n)),
       );
       await self.clients.claim();
@@ -227,7 +259,7 @@ async function networkFirstWithFallback(event, request, cache) {
   // いる不変条件を、実行時の1行が破る）。控えの更新は
   // 「sw の更新 → install → activate」だけが行う。
   const network = fetch(request).catch(() => null);
-  // 勝敗が決まっても裏の取得と控えへの反映は最後まで走らせる
+  // 勝敗が決まっても裏の取得は最後まで走らせる（控えには書かない）
   event.waitUntil(network);
 
   if (cached) {
@@ -237,7 +269,13 @@ async function networkFirstWithFallback(event, request, cache) {
     });
     const winner = await Promise.race([network, timeout]);
     clearTimeout(timer);
-    return winner ?? cached;
+    // 4xx/5xx は「取れた」に数えない。控えのある画面を、配信面や経路の一時的な
+    // 不調が返したエラーページで置き換えると、控えがあるのに当日ひらけなくなる。
+    // 転送（navigate は redirect:"manual" なので type:"opaqueredirect"＝ok は false）も
+    // 同じ扱いにする。控えのある URL が正しく転送されることはこの静的配信では無く、
+    // 会場で転送が返るのはたいてい接続前のログイン画面だからである。
+    // 控えが無い場合は下で素通しするので、正当な転送はブラウザが追える。
+    return winner && winner.ok ? winner : cached;
   }
 
   return (await network) ?? offlineNotice(request);
@@ -288,16 +326,24 @@ self.addEventListener("fetch", (event) => {
         return networkFirstWithFallback(event, request, cache);
       }
 
-      const cached = await matchAsset(cache, request);
-      // ハッシュ付きで内容不変。世代内で完結しているので控えをそのまま出す
-      if (cached && url.pathname.includes("/_next/static/")) return cached;
+      // この世代の控え。ハッシュ付き資産も RSC ペイロードも manifest も、
+      // 世代内で完結しているのでそのまま出す（そして書き換えない）。
+      // ここで裏の更新をかけると、新しいデプロイの実体が旧世代の中に混ざり、
+      // all-or-nothing が守っている版の一致がその世代の内側で崩れる。
+      const shipped = await matchAsset(cache, request);
+      if (shipped) return shipped;
 
-      // 画像・manifest 等：控え優先で出しつつ裏で更新しておく
+      // ここから先は世代に属さない同一オリジンの取得物。書くのは別置きだけ。
+      const runtime = await caches.open(RUNTIME);
+      const cached = await matchAsset(runtime, request);
+      const key = assetKey(request);
+
+      // 控え優先で出しつつ裏で更新しておく
       if (cached) {
         event.waitUntil(
           fetch(request)
             .then(async (res) => {
-              if (res.ok) await putSafe(cache, request, res);
+              if (res.ok) await putSafe(runtime, key, res);
             })
             .catch(() => {
               /* 圏外。控えのままでよい */
@@ -309,7 +355,7 @@ self.addEventListener("fetch", (event) => {
       try {
         const res = await fetch(request);
         // 控えへの書き込みを待たずに返す（長いストリームで応答が止まらないよう）
-        if (res.ok) event.waitUntil(putSafe(cache, request, res.clone()));
+        if (res.ok) event.waitUntil(putSafe(runtime, key, res.clone()));
         return res;
       } catch {
         // navigate は上で処理済みなのでここには来ない

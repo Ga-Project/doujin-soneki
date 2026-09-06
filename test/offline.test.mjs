@@ -314,3 +314,80 @@ test("sw-kill.js: 焼き込みの口を持つ（回復手段がビルドで落�
   assert.ok(kill.includes('["__REQUIRED__"]'));
   assert.ok(kill.includes('["__OPTIONAL__"]'));
 });
+
+test("sw.js: install の後は世代キャッシュに一切書かない（別置きにだけ書く）", () => {
+  // navigate だけでなく資産の経路も同じ。裏の更新で新しいデプロイの実体を
+  // 旧世代に混ぜると、all-or-nothing が守っている版の一致が世代の内側で崩れる
+  // （RSC ペイロードは ignoreSearch で照合するので、混ざると特に当たりやすい）。
+  const afterInstall = SW_SRC.slice(
+    SW_SRC.indexOf('self.addEventListener("activate"'),
+  );
+  const writes = [...afterInstall.matchAll(/putSafe\(\s*([A-Za-z]+)/g)].map(
+    (m) => m[1],
+  );
+  assert.ok(writes.length > 0, "書き込み経路を見つけられていない（検査が空振り）");
+  for (const target of writes) {
+    assert.equal(target, "runtime", `install の後で ${target} に書いている`);
+  }
+  assert.ok(
+    !afterInstall.includes("cache.put("),
+    "install の後で世代のキャッシュに直接書いている",
+  );
+  // 別置きは世代と別名で、掃除のときに巻き添えで消さない
+  assert.ok(SW_SRC.includes("const RUNTIME ="), "別置きの宣言が無い");
+  assert.ok(
+    SW_SRC.includes("n !== CACHE && n !== RUNTIME"),
+    "掃除が別置きまで消している",
+  );
+});
+
+test("sw.js: ページ遷移で 4xx/5xx を控えより優先しない", () => {
+  // 配信面や経路が一時的に返したエラーページで、控えのある画面を置き換えない。
+  assert.ok(
+    SW_SRC.includes("winner && winner.ok ? winner : cached"),
+    "非 OK 応答を「取れた」に数えている",
+  );
+});
+
+test("sw.js: 必須分の取得にも時間切れがある（本文の転送まで覆う）", () => {
+  // 応答ヘッダが返っても本文が来ないことはあり、cache.put で止まると install は
+  // 無期限に開いたまま＝「そなえ中」から動かず、失敗として畳まれず再試行もされない。
+  assert.ok(SW_SRC.includes("REQUIRED_TIMEOUT_MS"), "必須分に時間切れが無い");
+  const install = SW_SRC.slice(
+    SW_SRC.indexOf('self.addEventListener("install"'),
+    SW_SRC.indexOf('self.addEventListener("activate"'),
+  );
+  const created = install.indexOf("AbortSignal.timeout(REQUIRED_TIMEOUT_MS)");
+  const put = install.indexOf("await cache.put(url, res)");
+  assert.ok(created > 0 && put > 0, "取得と put を見つけられていない（検査が空振り）");
+  assert.ok(created < put, "時間切れが put より後に張られている");
+  assert.ok(
+    install.includes("fetch(url, { cache: \"reload\", signal })"),
+    "必須分の取得に signal を渡していない",
+  );
+});
+
+test("sw.js: 控えの鍵は RSC ペイロードのクエリを落とす（死蔵を積み上げない）", () => {
+  // 照合は ignoreSearch で当たるので、?_rsc 付きのまま書くと同じ実体が
+  // 遷移のたびに別の鍵で積み上がり、増えた分は二度と読まれない。
+  assert.match(SW_SRC, /function assetKey\(request\)/);
+  assert.ok(SW_SRC.includes('url.pathname.endsWith("/index.txt")'));
+});
+
+test("removeSonae: 解除するのは自分の scope の登録だけ", () => {
+  // getRegistrations() はオリジン全体を返す。無条件に解除すると、同じオリジンに
+  // 同居する別の公開物の Service Worker まで巻き添えで落とす。
+  const src = readFileSync(
+    new URL("../app/tally/useSonae.ts", import.meta.url),
+    "utf8",
+  );
+  const body = src.slice(
+    src.indexOf("function removeSonae"),
+    src.indexOf("function syncOptOut"),
+  );
+  assert.ok(body.length > 0, "removeSonae を見つけられていない（検査が空振り）");
+  assert.ok(
+    /r\.scope === scope/.test(body),
+    "オリジン全体の登録を解除している",
+  );
+});

@@ -46,19 +46,29 @@ export function markObiSeen(): void {
  * 控えを撤去する。`?nosw` の逃げ道は sw 側の unregister だけでは成立しない
  * （同じページの JS が即座に登録し直す）ので、ページ側からも消しに行く。
  * 壊れた sw の fetch ハンドラに依存しないため、これが最後の頼りになる。
+ *
+ * 解除するのは **この製品の scope の登録だけ**。getRegistrations() は
+ * オリジン全体の登録を返すので、そのまま全部 unregister すると、
+ * 同じオリジンに同居する別の公開物の Service Worker まで巻き添えで落とす。
+ *
+ * 全体を try で覆うのは、逃げ道が「壊れていても効く」ことに意味があるため。
+ * 途中の1つが投げて呼び出し側（登録の入口）ごと倒れると、撤去も登録もされない
+ * 宙ぶらりんになる。
  */
-function removeSonae(): Promise<void> {
-  return navigator.serviceWorker
-    .getRegistrations()
-    .then((rs) => Promise.all(rs.map((r) => r.unregister())))
-    .then(() => caches.keys())
-    .then((ks) =>
-      Promise.all(
-        ks.filter((k) => k.startsWith("soneki-")).map((k) => caches.delete(k)),
-      ),
-    )
-    .then(() => undefined)
-    .catch(() => undefined);
+async function removeSonae(): Promise<void> {
+  try {
+    const scope = new URL(swScope(BASE), location.origin).toString();
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(
+      regs.filter((r) => r.scope === scope).map((r) => r.unregister()),
+    );
+    const keys = await caches.keys();
+    await Promise.all(
+      keys.filter((k) => k.startsWith("soneki-")).map((k) => caches.delete(k)),
+    );
+  } catch {
+    /* 消せなくても画面は妨げない。sw 側の撤去も同じことを試みている */
+  }
 }
 
 /** Service Worker を登録する（冪等）。全ページから呼ばれる。 */
