@@ -4,14 +4,26 @@
 /** 公開後の GitHub Pages URL（OGP/canonical に使う）。trailingSlash:true に合わせ末尾スラッシュ。 */
 export const SITE_URL = "https://ga-project.github.io/doujin-soneki/";
 
-/** GoatCounter（cookieless・秘密キー不要）のコード。publish 時に実コードへ差し替える。 */
-export const GOATCOUNTER_CODE = "ga-project";
+/**
+ * GoatCounter（cookieless・秘密キー不要）のコード。publish 時に実コードへ差し替える。
+ * 型を string と明示するのは、リテラル型に狭まると下の検査が「有り得ない比較」
+ * として型エラーになり、差し替え後の値を検査できなくなるため。
+ */
+export const GOATCOUNTER_CODE: string = "ga-project";
 
 /**
  * 解析タグを出力してよいか。プレースホルダのままでは壊れた URL へのリクエストを
  * 出さないよう layout 側でタグ自体を出力しない（実コードを入れると有効化される）。
+ *
+ * 空文字も前後に空白の付いた値も「未設定」として扱う。解析を止めたい人は
+ * コードを消す（それが自然な操作）が、空を設定済みと読むと
+ * `https://.goatcounter.com/count` という壊れた宛先へ全ページビューで
+ * リクエストを出す。検査する値と出す値がずれないよう、整形はせず素の値で判定する。
  */
-export const GOATCOUNTER_CONFIGURED = !GOATCOUNTER_CODE.includes("__");
+export const GOATCOUNTER_CONFIGURED =
+  GOATCOUNTER_CODE !== "" &&
+  GOATCOUNTER_CODE.trim() === GOATCOUNTER_CODE &&
+  !GOATCOUNTER_CODE.includes("__");
 
 /** localStorage の保存名（スキーマ変更時はバージョンを上げて旧データを読み捨てる）。 */
 export const SIM_STORAGE_NAME = "soneki.sim.v1";
@@ -19,6 +31,21 @@ export const TALLY_STORAGE_NAME = "soneki.tally.v1";
 
 /** 「この端末に控えを取りました」の知らせを既に見せたか（当日そなえ・1回きり）。 */
 export const SONAE_SEEN_NAME = "soneki.sonae.v1";
+
+/**
+ * 当日そなえ（Service Worker の登録）を行うか。
+ *
+ * 止め方（kill switch）の片割れ。`public/sw.js` を `scripts/sw-kill.js` の中身に
+ * 差し替えるだけでは止まらない。取り消し版は登録を解除したうえで制御下のページを
+ * 開き直させるが、開き直したページがこの登録を **また** 行うと、取り消し版が
+ * 入り直して解除と再読み込みを繰り返す（再読み込みの無限ループになり、
+ * 素のサイトへ戻れない）。差し替えと同時にこれを false にして、ページ側の
+ * 登録ごと止める。手順は README「当日そなえ（オフライン対応）」を参照。
+ *
+ * 型を boolean と明示するのは、リテラル型に狭まると差し替え側の分岐が
+ * 到達不能として扱われるため。
+ */
+export const SONAE_ENABLED: boolean = true;
 
 
 /**

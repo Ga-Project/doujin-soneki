@@ -67,6 +67,9 @@ if (uncovered.length > 0) {
 // 必須（当日の主戦場）と任意（周辺ページ）に分ける。
 const { required, optional } = splitPrecache(precache, [...requiredStatic]);
 
+const swPath = join(OUT, "sw.js");
+const src = await readFile(swPath, "utf8");
+
 // 世代名 = 控えるものの内容ハッシュ。中身が1バイトでも変われば別世代になる。
 // 控えないファイル（og.png・sitemap 等）は含めない。
 // なお Next の buildId は毎ビルド変わり、それが HTML と index.txt の本文に
@@ -74,6 +77,19 @@ const { required, optional } = splitPrecache(precache, [...requiredStatic]);
 // 「差し替えないファイルなら世代を跨げる」ことは期待できない。
 // 結果として main への push は内容によらず全端末に控えの取り直しを起こす。
 const digest = createHash("sha256");
+// Service Worker 自身も世代名に含める。含めないと、sw.js だけを直した配信で
+// 世代名が据え置かれ、install 中の版が **現に動いている版の控えを開く**。
+// その版の put が1つでも失敗すると caches.delete(CACHE) が走り、
+// 取り直しに失敗した端末が、それまで持っていた完全な控えごと失う
+// （直しを配ったことが、当日ひらけなくなる原因になる）。
+// 焼き込み前の中身を使う。焼き込み後は世代名を含むので循環する。
+digest.update(src);
+// 焼き込む値そのものも混ぜる。sw.js の雛形と控える中身が同じでも、
+// 出口（SHELL_MAIN）や必須／任意の切り分けが変われば配られる sw.js は
+// 別物になる。世代名が据え置かれると、上と同じ「現に動いている版の控えを
+// install 中の版が開く」に戻る（scripts/ は out/ に入らないので、
+// この 1 行が無いと切り分けの変更は世代名に一切反映されない）。
+digest.update(JSON.stringify({ shellMain: PRIMARY_SHELL, required, optional }));
 for (const p of precache) {
   digest.update(p);
   digest.update(await readFile(join(OUT, p === "" ? "index.html" : p.endsWith("/") ? `${p}index.html` : p)));
@@ -88,8 +104,6 @@ const SHELL_MAIN_DECL = 'const SHELL_MAIN = "__SHELL_MAIN__";';
 const REQUIRED_DECL = '["__REQUIRED__"]';
 const OPTIONAL_DECL = '["__OPTIONAL__"]';
 
-const swPath = join(OUT, "sw.js");
-const src = await readFile(swPath, "utf8");
 if (
   !src.includes(BUILD_DECL) ||
   !src.includes(SHELL_MAIN_DECL) ||
