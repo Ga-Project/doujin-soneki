@@ -5,5 +5,45 @@
 #
 #   unrs-resolver: eslint-config-next が使うリゾルバ(ネイティブ binding)。
 #                  `next lint` / install の build script に必要。
+
+# auditConfig:
+#   CI の `pnpm audit --audit-level high` は high/critical で落ちる。ここに載せた GHSA だけが
+#   exit 0 に寄与する。載せてよいのは「dev ツール専用 / ビルド時のみ / Next サーバ経路
+#   (output:"export" では未起動)」で、静的書き出しの出荷物(out/)の攻撃面に到達しないものだけ。
+#   本製品は GitHub Pages が out/ を配信するのみで Next サーバを持たない。
+#   ⚠️再評価: SSR/API Route/middleware を導入 or Node で self-host したら、Next サーバ経路の
+#            エントリを撤去し next を 15.5.24+ へ更新すること。
+auditConfig:
+  ignoreGhsas:
+    # dev ツール専用(eslint/lint 実行時のみ・出荷物 out/ に非含有)
+    - GHSA-3jxr-9vmj-r5cp   # brace-expansion DoS
+    - GHSA-mh99-v99m-4gvg   # brace-expansion DoS
+    - GHSA-rgw5-rvv9-x895   # brace-expansion DoS
+    - GHSA-5j98-mcp5-4vw2   # glob CLI(-c)注入・ライブラリ利用のみ
+    - GHSA-2883-xcg3-v3hh   # js-yaml (eslint 設定パース時)
+    - GHSA-52cp-r559-cp3m   # js-yaml
+    - GHSA-5p4m-2wfm-xmqj   # js-yaml
+    # ビルド時のみ(next > postcss / nanoid・出荷物 out/ に非含有)
+    - GHSA-6g55-p6wh-862q   # postcss
+    - GHSA-r28c-9q8g-f849   # postcss
+    - GHSA-2v37-7h3g-55p8   # nanoid
+    - GHSA-28wg-ghj8-5hjv   # nanoid
+    # Next サーバ経路(静的 export では Next サーバ未起動＝本番に到達経路なし)
+    - GHSA-2xp9-vwfh-vxw4   # CRITICAL: Unauthenticated RCE
+    - GHSA-p293-qw3h-jr36   # CRITICAL: Unauthenticated RCE
+    - GHSA-36qx-fr4f-26g5   # middleware/proxy bypass
+    - GHSA-89xv-2m56-2m9x   # SSRF
+    - GHSA-8h8q-6873-q5fj   # DoS
+    - GHSA-c4j6-fc7j-m34r   # SSRF
+    - GHSA-h25m-26qc-wcjf   # request deserialization
+    - GHSA-m99w-x7hq-7vfj   # DoS (App Router)
+    - GHSA-p9j2-gv94-2wf4   # SSRF (rewrites)
+    - GHSA-q4gf-8mx6-v5v3   # DoS (Server Actions)
+    - GHSA-5j59-xgg2-r9c4   # next(既存configより・現行未flagだが予防保持)
+    - GHSA-mwv6-3258-q52c   # next(同上)
+    # 未使用の画像プロセッサ(next > sharp・実行時未呼出・予防)
+    - GHSA-f88m-g3jw-g9cj   # sharp
+    - GHSA-rgj7-g3m4-5g8c   # sharp/libheif
+
 allowBuilds:
   unrs-resolver: true
